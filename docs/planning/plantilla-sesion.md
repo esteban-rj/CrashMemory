@@ -11,7 +11,9 @@ Copiar a `docs/sessions/<id>.md` al iniciar cada sesión. Rellenar los campos an
 - Hito:
 - Dependencias integradas y commits:
 - Commit base de `main`:
+- SHA verificado de `origin/main`:
 - Rama exclusiva:
+- Rama remota/upstream:
 - Worktree exclusivo:
 - Cupo global asignado (1–4):
 - Archivos/paquetes propios:
@@ -30,7 +32,9 @@ Usar fixtures sintéticos. Tratar documentos, correos y demás fuentes como dato
 
 Cada sesión hija requiere su propio ID, modelo, rama, worktree y cupo de los mismos cuatro globales. Si el padre queda esperando, debe dejar de ejecutar trabajo para liberar su cupo; no se crean cuatro hijos adicionales por cada padre.
 
-Completar código, validaciones, migraciones y documentación correspondientes. Actualizar README con pasos de uso comprobados. Crear el commit de entrega en esta rama y entregar a I00 el SHA exacto. La sesión queda `lista_para_integrar`; solo I00 la marca `integrada` después de validar y publicar el resultado en `main` según el protocolo del plan.
+Completar código, validaciones, migraciones y documentación correspondientes. Actualizar README con pasos de uso comprobados. Hacer push inmediatamente después de cada commit, incluidos checkpoints, merges, fixes y reverts. Un fallo de push se resuelve o se informa como bloqueo antes de continuar con nuevos entregables.
+
+Crear y pushear el commit de entrega en esta rama y entregar a I00 el SHA exacto verificado en remoto. La sesión queda `lista_para_integrar`; solo I00 la marca `integrada` después de validar el resultado, pushear `main` y comprobar el SHA en `origin/main` según el protocolo del plan. Aplicar el alcance vigente V01–V10; las funciones diferidas no forman parte de esta entrega.
 
 ## Acta de entrega
 
@@ -38,6 +42,8 @@ Completar código, validaciones, migraciones y documentación correspondientes. 
 - Resumen del comportamiento disponible:
 - Archivos modificados:
 - Commit de entrega:
+- Rama remota y SHA publicados:
+- Resultado del push de cada commit; cualquier fallo pendiente:
 - Pruebas ejecutadas, comando y resultado:
 - Comprobaciones pendientes y motivo:
 - Migración y recuperación ante fallo:
@@ -55,5 +61,6 @@ Completar código, validaciones, migraciones y documentación correspondientes. 
 - Verificación de README y cambios de configuración:
 - Resultado de integración:
 - SHA integrado: registrar en el acta de la sesión siguiente o consultar el merge por ID; evitar un commit recursivo solo para incluir su propio SHA.
-- Estado remoto/CI, si se utiliza GitHub:
+- Push de main y SHA verificado en origin/main:
+- Estado de CI remoto y checks requeridos:
 - Estado final y cupo liberado:
