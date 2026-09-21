@@ -1,8 +1,47 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyServerOptions } from "fastify";
+import type { Pool } from "pg";
 import { CONTRACT_VERSION, demoObligation } from "@crashmemory/contracts";
+import { registerAuthRoutes, type AuthConfig } from "./auth.ts";
 
-export function buildApp() {
-  const app = Fastify({ logger: false });
+export function buildApp(
+  options: {
+    pool?: Pool;
+    auth?: AuthConfig;
+    logger?: FastifyServerOptions["logger"];
+  } = {},
+) {
+  const app = Fastify({ logger: options.logger ?? false });
+
+  app.setErrorHandler((error, request, reply) => {
+    request.log.error({ err: error }, "request failed");
+    const reportedStatus =
+      error &&
+      typeof error === "object" &&
+      "statusCode" in error &&
+      typeof error.statusCode === "number"
+        ? error.statusCode
+        : undefined;
+    const statusCode =
+      reportedStatus && reportedStatus >= 400 && reportedStatus < 500
+        ? reportedStatus
+        : 500;
+    return reply.code(statusCode).send({
+      error: {
+        code: statusCode === 500 ? "internal_error" : "invalid_request",
+        message:
+          statusCode === 500
+            ? "The request could not be completed"
+            : "The request is invalid",
+        requestId: request.id,
+      },
+    });
+  });
+
+  app.addHook("onSend", async (request, reply) => {
+    if (request.url.startsWith("/api/v1/")) {
+      reply.header("X-CrashMemory-Contract", CONTRACT_VERSION);
+    }
+  });
 
   app.get("/healthz", async () => ({
     status: "ok",
@@ -13,6 +52,29 @@ export function buildApp() {
     data: [demoObligation],
     meta: { mode: "synthetic-demo", persistence: "none" },
   }));
+
+  if (options.pool && options.auth) {
+    registerAuthRoutes(app, options.pool, options.auth);
+  } else {
+    app.post("/api/v1/auth/login", async (request, reply) =>
+      reply.code(503).send({
+        error: {
+          code: "persistence_unavailable",
+          message: "Authentication requires PostgreSQL configuration",
+          requestId: request.id,
+        },
+      }),
+    );
+    app.post("/api/v1/auth/logout", async (request, reply) =>
+      reply.code(503).send({
+        error: {
+          code: "persistence_unavailable",
+          message: "Authentication requires PostgreSQL configuration",
+          requestId: request.id,
+        },
+      }),
+    );
+  }
 
   return app;
 }

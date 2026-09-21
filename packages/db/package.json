@@ -1,20 +1,22 @@
 {
-  "name": "@crashmemory/api",
+  "name": "@crashmemory/db",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "demo": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/repositories.integration.test.ts",
+    "migrate": "tsx src/cli/migrate.ts",
+    "seed": "tsx src/cli/seed.ts"
   },
   "dependencies": {
+    "@crashmemory/canonical-model": "workspace:*",
     "@crashmemory/contracts": "workspace:*",
-    "@crashmemory/db": "workspace:*",
     "@crashmemory/security": "workspace:*",
-    "fastify": "5.12.5",
     "pg": "8.16.3"
   },
   "devDependencies": {

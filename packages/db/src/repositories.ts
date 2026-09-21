@@ -1,0 +1,816 @@
+import type { Pool } from "pg";
+import { inTransaction, type Queryable } from "./client.ts";
+import {
+  fromStoredDue,
+  normalizeMoney,
+  toStoredDue,
+  type StoredDueValue,
+} from "@crashmemory/canonical-model";
+import {
+  OutboxEventSchema,
+  TimeZoneSchema,
+  type DueValue,
+  type Money,
+  type ObligationSummary,
+  type OutboxEvent,
+} from "@crashmemory/contracts";
+import type { EncryptedSecret } from "@crashmemory/security";
+
+export interface UserRecord {
+  id: string;
+  emailNormalized: string;
+  passwordHash: string;
+  timeZone: string;
+  state: "active" | "disabled";
+}
+
+function mapUser(row: Record<string, unknown>): UserRecord {
+  return {
+    id: String(row.id),
+    emailNormalized: String(row.email_normalized),
+    passwordHash: String(row.password_hash),
+    timeZone: String(row.time_zone),
+    state: row.state as UserRecord["state"],
+  };
+}
+
+export class UserRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async create(input: {
+    id: string;
+    emailNormalized: string;
+    passwordHash: string;
+    timeZone: string;
+  }): Promise<UserRecord> {
+    const timeZone = TimeZoneSchema.parse(input.timeZone);
+    const result = await this.db.query(
+      `INSERT INTO users(id, email_normalized, password_hash, time_zone)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [input.id, input.emailNormalized, input.passwordHash, timeZone],
+    );
+    return mapUser(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findByEmail(emailNormalized: string): Promise<UserRecord | null> {
+    const result = await this.db.query(
+      "SELECT * FROM users WHERE email_normalized = $1 AND state = 'active'",
+      [emailNormalized],
+    );
+    return result.rowCount === 0
+      ? null
+      : mapUser(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findById(id: string): Promise<UserRecord | null> {
+    const result = await this.db.query(
+      "SELECT * FROM users WHERE id = $1 AND state = 'active'",
+      [id],
+    );
+    return result.rowCount === 0
+      ? null
+      : mapUser(result.rows[0] as Record<string, unknown>);
+  }
+}
+
+export interface ActiveSession {
+  id: string;
+  userId: string;
+  csrfTokenHash: string;
+  expiresAt: Date;
+}
+
+export class SessionRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async create(input: {
+    id: string;
+    userId: string;
+    tokenHash: string;
+    csrfTokenHash: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO auth_sessions(id, user_id, token_hash, csrf_token_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        input.id,
+        input.userId,
+        input.tokenHash,
+        input.csrfTokenHash,
+        input.expiresAt,
+      ],
+    );
+  }
+
+  async findActive(
+    tokenHash: string,
+    now = new Date(),
+  ): Promise<ActiveSession | null> {
+    const result = await this.db.query(
+      `SELECT s.id, s.user_id, s.csrf_token_hash, s.expires_at
+       FROM auth_sessions s
+       JOIN users u ON u.id = s.user_id AND u.state = 'active'
+       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2`,
+      [tokenHash, now],
+    );
+    if (result.rowCount === 0) return null;
+    const row = result.rows[0] as Record<string, unknown>;
+    return {
+      id: String(row.id),
+      userId: String(row.user_id),
+      csrfTokenHash: String(row.csrf_token_hash),
+      expiresAt: row.expires_at as Date,
+    };
+  }
+
+  async revoke(id: string, userId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE auth_sessions SET revoked_at = now()
+       WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+      [id, userId],
+    );
+    return result.rowCount === 1;
+  }
+}
+
+export class SourceRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async createConnection(input: {
+    id: string;
+    userId: string;
+    externalAccountId: string;
+    state?: "pending" | "active" | "revoked" | "error";
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO source_connections(id, user_id, provider, external_account_id, state)
+       VALUES ($1, $2, 'gmail', $3, $4)`,
+      [
+        input.id,
+        input.userId,
+        input.externalAccountId,
+        input.state ?? "pending",
+      ],
+    );
+  }
+
+  async storeCredential(input: {
+    id: string;
+    userId: string;
+    sourceConnectionId: string;
+    encrypted: EncryptedSecret;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO encrypted_credentials(
+         id, user_id, source_connection_id, key_version, iv, ciphertext, auth_tag
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.id,
+        input.userId,
+        input.sourceConnectionId,
+        input.encrypted.keyVersion,
+        Buffer.from(input.encrypted.iv, "base64"),
+        Buffer.from(input.encrypted.ciphertext, "base64"),
+        Buffer.from(input.encrypted.authTag, "base64"),
+      ],
+    );
+  }
+
+  async getCredential(
+    userId: string,
+    sourceConnectionId: string,
+  ): Promise<EncryptedSecret | null> {
+    const result = await this.db.query(
+      `SELECT key_version, iv, ciphertext, auth_tag
+       FROM encrypted_credentials
+       WHERE user_id = $1 AND source_connection_id = $2`,
+      [userId, sourceConnectionId],
+    );
+    if (result.rowCount === 0) return null;
+    const row = result.rows[0] as Record<string, unknown>;
+    return {
+      keyVersion: String(row.key_version),
+      iv: (row.iv as Buffer).toString("base64"),
+      ciphertext: (row.ciphertext as Buffer).toString("base64"),
+      authTag: (row.auth_tag as Buffer).toString("base64"),
+    };
+  }
+
+  async createBlob(input: {
+    id: string;
+    userId: string;
+    storageKey: string;
+    contentType: string;
+    byteSize: number;
+    contentSha256: string;
+  }): Promise<void> {
+    if (!input.storageKey.startsWith(`users/${input.userId}/`)) {
+      throw new Error("Blob storage keys must be namespaced by owner");
+    }
+    await this.db.query(
+      `INSERT INTO blobs(id, user_id, storage_key, content_type, byte_size, content_sha256)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        input.id,
+        input.userId,
+        input.storageKey,
+        input.contentType,
+        input.byteSize,
+        input.contentSha256,
+      ],
+    );
+  }
+
+  async getBlob(
+    userId: string,
+    id: string,
+  ): Promise<Record<string, unknown> | null> {
+    const result = await this.db.query(
+      `SELECT id, storage_key, content_type, byte_size, content_sha256
+       FROM blobs WHERE id = $1 AND user_id = $2`,
+      [id, userId],
+    );
+    return result.rowCount === 0
+      ? null
+      : (result.rows[0] as Record<string, unknown>);
+  }
+
+  async createItem(input: {
+    id: string;
+    userId: string;
+    sourceConnectionId: string;
+    externalId: string;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO source_items(id, user_id, source_connection_id, external_id)
+       VALUES ($1, $2, $3, $4)`,
+      [input.id, input.userId, input.sourceConnectionId, input.externalId],
+    );
+  }
+
+  async createRevision(input: {
+    id: string;
+    userId: string;
+    sourceItemId: string;
+    revision: number;
+    originalBlobId: string;
+    contentSha256: string;
+    observedAt: Date;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO source_item_revisions(
+         id, user_id, source_item_id, revision, original_blob_id, content_sha256, observed_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.id,
+        input.userId,
+        input.sourceItemId,
+        input.revision,
+        input.originalBlobId,
+        input.contentSha256,
+        input.observedAt,
+      ],
+    );
+  }
+
+  async createNormalizedBody(input: {
+    id: string;
+    userId: string;
+    sourceItemRevisionId: string;
+    bodyBlobId: string;
+    contentSha256: string;
+    utf16Length: number;
+    normalizationVersion: string;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO source_revision_bodies(
+         id, user_id, source_item_revision_id, body_blob_id, content_sha256,
+         utf16_length, normalization_version
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.id,
+        input.userId,
+        input.sourceItemRevisionId,
+        input.bodyBlobId,
+        input.contentSha256,
+        input.utf16Length,
+        input.normalizationVersion,
+      ],
+    );
+  }
+
+  async createAttachment(input: {
+    id: string;
+    userId: string;
+    sourceItemRevisionId: string;
+    externalAttachmentId: string;
+    blobId: string;
+    fileName: string;
+    mediaType: string;
+    byteSize: number;
+    contentSha256: string;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO source_attachments(
+         id, user_id, source_item_revision_id, external_attachment_id, blob_id,
+         file_name, media_type, byte_size, content_sha256
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        input.id,
+        input.userId,
+        input.sourceItemRevisionId,
+        input.externalAttachmentId,
+        input.blobId,
+        input.fileName,
+        input.mediaType,
+        input.byteSize,
+        input.contentSha256,
+      ],
+    );
+  }
+
+  async getExtractionInput(
+    userId: string,
+    sourceItemRevisionId: string,
+  ): Promise<{
+    sourceItemRevisionId: string;
+    body: {
+      blobId: string;
+      contentSha256: string;
+      utf16Length: number;
+      normalizationVersion: string;
+    };
+    attachments: Array<{
+      id: string;
+      blobId: string;
+      fileName: string;
+      mediaType: string;
+      byteSize: number;
+      contentSha256: string;
+    }>;
+  } | null> {
+    const bodyResult = await this.db.query(
+      `SELECT source_item_revision_id, body_blob_id, content_sha256,
+              utf16_length, normalization_version
+       FROM source_revision_bodies
+       WHERE source_item_revision_id = $1 AND user_id = $2`,
+      [sourceItemRevisionId, userId],
+    );
+    if (bodyResult.rowCount === 0) return null;
+    const body = bodyResult.rows[0] as Record<string, unknown>;
+    const attachments = await this.db.query(
+      `SELECT id, blob_id, file_name, media_type, byte_size, content_sha256
+       FROM source_attachments
+       WHERE source_item_revision_id = $1 AND user_id = $2
+       ORDER BY external_attachment_id`,
+      [sourceItemRevisionId, userId],
+    );
+    return {
+      sourceItemRevisionId: String(body.source_item_revision_id),
+      body: {
+        blobId: String(body.body_blob_id),
+        contentSha256: String(body.content_sha256),
+        utf16Length: Number(body.utf16_length),
+        normalizationVersion: String(body.normalization_version),
+      },
+      attachments: attachments.rows.map((row: Record<string, unknown>) => ({
+        id: String(row.id),
+        blobId: String(row.blob_id),
+        fileName: String(row.file_name),
+        mediaType: String(row.media_type),
+        byteSize: Number(row.byte_size),
+        contentSha256: String(row.content_sha256),
+      })),
+    };
+  }
+
+  async createEvidence(input: {
+    id: string;
+    userId: string;
+    sourceItemRevisionId: string;
+    kind: "email_body_fragment" | "pdf_text_fragment";
+    attachmentId?: string;
+    page?: number;
+    startOffset: number;
+    endOffset: number;
+    quote: string;
+    contentSha256: string;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO evidence(
+         id, user_id, source_item_revision_id, kind, attachment_id, page,
+         start_offset, end_offset, quote, content_sha256
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        input.id,
+        input.userId,
+        input.sourceItemRevisionId,
+        input.kind,
+        input.attachmentId ?? null,
+        input.page ?? null,
+        input.startOffset,
+        input.endOffset,
+        input.quote,
+        input.contentSha256,
+      ],
+    );
+  }
+
+  async getEvidence(
+    userId: string,
+    id: string,
+  ): Promise<Record<string, unknown> | null> {
+    const result = await this.db.query(
+      `SELECT e.id, e.kind, e.source_item_revision_id, e.attachment_id,
+              e.page, e.start_offset, e.end_offset, e.quote, e.content_sha256,
+              r.original_blob_id
+       FROM evidence e
+       JOIN source_item_revisions r
+         ON r.id = e.source_item_revision_id AND r.user_id = e.user_id
+       WHERE e.id = $1 AND e.user_id = $2`,
+      [id, userId],
+    );
+    return result.rowCount === 0
+      ? null
+      : (result.rows[0] as Record<string, unknown>);
+  }
+}
+
+function canonicalNumeric(value: string | null): string | undefined {
+  if (value === null) return undefined;
+  return value.includes(".")
+    ? value.replace(/0+$/, "").replace(/\.$/, "")
+    : value;
+}
+
+export class ObligationRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async createCandidate(input: {
+    id: string;
+    versionId: string;
+    userId: string;
+    title: string;
+    amount?: Money;
+    due?: DueValue;
+    evidenceIds: string[];
+    outboxEvent: OutboxEvent;
+  }): Promise<void> {
+    const uniqueEvidenceIds = [...new Set(input.evidenceIds)];
+    if (
+      uniqueEvidenceIds.length === 0 ||
+      uniqueEvidenceIds.length !== input.evidenceIds.length
+    ) {
+      throw new Error(
+        "A candidate requires at least one unique evidence record",
+      );
+    }
+    const amount = normalizeMoney(input.amount);
+    const due = toStoredDue(input.due);
+    const event = OutboxEventSchema.parse(input.outboxEvent);
+    if (
+      event.userId !== input.userId ||
+      event.aggregateId !== input.id ||
+      event.type !== "obligation.candidate.created.v1" ||
+      event.payload.obligationId !== input.id
+    ) {
+      throw new Error(
+        "Outbox event does not belong to the candidate obligation",
+      );
+    }
+    await inTransaction(this.pool, async (client) => {
+      const evidence = await client.query<{ matched: number }>(
+        `SELECT count(*)::integer AS matched
+         FROM evidence
+         WHERE user_id = $1 AND source_item_revision_id = $2
+           AND id = ANY($3::uuid[])`,
+        [input.userId, event.payload.sourceItemRevisionId, uniqueEvidenceIds],
+      );
+      if (evidence.rows[0]?.matched !== uniqueEvidenceIds.length) {
+        throw new Error(
+          "Candidate evidence must belong to its user and source revision",
+        );
+      }
+      await client.query(
+        "INSERT INTO obligations(id, user_id, state) VALUES ($1, $2, 'candidate')",
+        [input.id, input.userId],
+      );
+      await client.query(
+        `INSERT INTO obligation_versions(
+           id, user_id, obligation_id, revision, title, amount, currency,
+           due_kind, due_date, due_at, time_zone
+         ) VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          input.versionId,
+          input.userId,
+          input.id,
+          input.title,
+          amount?.amount ?? null,
+          amount?.currency ?? null,
+          due.dueKind,
+          due.dueDate,
+          due.dueAt,
+          due.timeZone,
+        ],
+      );
+      for (const evidenceId of uniqueEvidenceIds) {
+        await client.query(
+          `INSERT INTO obligation_version_evidence(user_id, obligation_version_id, evidence_id)
+           VALUES ($1, $2, $3)`,
+          [input.userId, input.versionId, evidenceId],
+        );
+      }
+      await client.query(
+        "UPDATE obligations SET current_version_id = $1, updated_at = now() WHERE id = $2 AND user_id = $3",
+        [input.versionId, input.id, input.userId],
+      );
+      await client.query(
+        `INSERT INTO outbox_events(
+           id, user_id, event_type, aggregate_type, aggregate_id,
+           idempotency_key, occurred_at, payload
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          event.id,
+          event.userId,
+          event.type,
+          event.aggregateType,
+          event.aggregateId,
+          event.idempotencyKey,
+          event.occurredAt,
+          event.payload,
+        ],
+      );
+    });
+  }
+
+  async getSummary(
+    userId: string,
+    id: string,
+  ): Promise<ObligationSummary | null> {
+    const result = await this.pool.query(
+      `SELECT o.id, o.state, o.current_version_id, v.title, v.amount::text AS amount,
+              v.currency, v.due_kind, v.due_date::text AS due_date,
+              v.due_at, v.time_zone, v.revision,
+              COALESCE(array_agg(ove.evidence_id::text) FILTER (WHERE ove.evidence_id IS NOT NULL), '{}') AS evidence_ids
+       FROM obligations o
+       JOIN obligation_versions v
+         ON v.id = o.current_version_id AND v.user_id = o.user_id AND v.obligation_id = o.id
+       LEFT JOIN obligation_version_evidence ove
+         ON ove.obligation_version_id = v.id AND ove.user_id = o.user_id
+       WHERE o.id = $1 AND o.user_id = $2
+       GROUP BY o.id, o.state, o.current_version_id, v.title, v.amount, v.currency,
+                v.due_kind, v.due_date, v.due_at, v.time_zone, v.revision`,
+      [id, userId],
+    );
+    if (result.rowCount === 0) return null;
+    const row = result.rows[0] as Record<string, unknown>;
+    const amount = canonicalNumeric(row.amount as string | null);
+    const storedDue: StoredDueValue = {
+      dueKind: row.due_kind as StoredDueValue["dueKind"],
+      dueDate: row.due_date as string | null,
+      dueAt: row.due_at ? (row.due_at as Date).toISOString() : null,
+      timeZone: row.time_zone as string | null,
+    };
+    return {
+      id: String(row.id),
+      currentVersionId: String(row.current_version_id),
+      state: row.state as ObligationSummary["state"],
+      title: String(row.title),
+      ...(amount && row.currency
+        ? { amount: { amount, currency: String(row.currency).trim() } }
+        : {}),
+      ...(storedDue.dueKind ? { due: fromStoredDue(storedDue) } : {}),
+      evidenceIds: row.evidence_ids as string[],
+      revision: Number(row.revision),
+    };
+  }
+
+  async addCorrection(input: {
+    id: string;
+    userId: string;
+    obligationId: string;
+    basedOnVersionId: string;
+    fieldName: "title" | "amount" | "due" | "state";
+    correctedValue: unknown;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO field_corrections(
+         id, user_id, obligation_id, based_on_version_id, field_name, corrected_value
+       ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        input.id,
+        input.userId,
+        input.obligationId,
+        input.basedOnVersionId,
+        input.fieldName,
+        input.correctedValue,
+      ],
+    );
+  }
+}
+
+export class CursorRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async upsert(input: {
+    id: string;
+    userId: string;
+    sourceConnectionId: string;
+    cursorValue: string;
+    observedAt: Date;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO sync_cursors(id, user_id, source_connection_id, cursor_value, observed_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (source_connection_id) DO UPDATE
+       SET cursor_value = EXCLUDED.cursor_value,
+           observed_at = EXCLUDED.observed_at,
+           updated_at = now()
+       WHERE sync_cursors.user_id = EXCLUDED.user_id`,
+      [
+        input.id,
+        input.userId,
+        input.sourceConnectionId,
+        input.cursorValue,
+        input.observedAt,
+      ],
+    );
+  }
+}
+
+export class OAuthCallbackRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async create(input: {
+    id: string;
+    userId: string;
+    authSessionId: string;
+    provider: "gmail";
+    nonceHash: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO oauth_callback_nonces(
+         id, user_id, auth_session_id, provider, nonce_hash, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        input.id,
+        input.userId,
+        input.authSessionId,
+        input.provider,
+        input.nonceHash,
+        input.expiresAt,
+      ],
+    );
+  }
+
+  async consume(input: {
+    userId: string;
+    authSessionId: string;
+    provider: "gmail";
+    nonceHash: string;
+    now?: Date;
+  }): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE oauth_callback_nonces
+       SET consumed_at = $5
+       WHERE user_id = $1 AND auth_session_id = $2 AND provider = $3
+         AND nonce_hash = $4 AND consumed_at IS NULL AND expires_at > $5`,
+      [
+        input.userId,
+        input.authSessionId,
+        input.provider,
+        input.nonceHash,
+        input.now ?? new Date(),
+      ],
+    );
+    return result.rowCount === 1;
+  }
+}
+
+export class ReminderRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async create(input: {
+    id: string;
+    userId: string;
+    obligationId: string;
+    obligationVersionId: string;
+    targetVersion: number;
+    scheduledFor: Date;
+    policy: unknown;
+    dedupeKey: string;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO reminders(
+         id, user_id, obligation_id, obligation_version_id, target_version,
+         scheduled_for, policy, dedupe_key
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        input.id,
+        input.userId,
+        input.obligationId,
+        input.obligationVersionId,
+        input.targetVersion,
+        input.scheduledFor,
+        input.policy,
+        input.dedupeKey,
+      ],
+    );
+  }
+
+  async recordAttempt(input: {
+    id: string;
+    userId: string;
+    reminderId: string;
+    attemptNumber: number;
+    outcome: "sent" | "failed" | "unknown";
+    providerMessageId?: string;
+    errorCode?: string;
+    resolvedAt: Date;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO delivery_attempts(
+         id, user_id, reminder_id, attempt_number, outcome,
+         provider_message_id, error_code, resolved_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        input.id,
+        input.userId,
+        input.reminderId,
+        input.attemptNumber,
+        input.outcome,
+        input.providerMessageId ?? null,
+        input.errorCode ?? null,
+        input.resolvedAt,
+      ],
+    );
+  }
+}
+
+export class LedgerRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async recordModelUsage(input: {
+    id: string;
+    userId: string;
+    operationKey: string;
+    entrySequence: number;
+    provider: string;
+    model: string;
+    pricingVersion: string;
+    status: "reserved" | "estimated" | "billed" | "unknown" | "released";
+    inputUnits?: number;
+    outputUnits?: number;
+    cost?: Money;
+  }): Promise<void> {
+    const cost = input.cost ? normalizeMoney(input.cost) : undefined;
+    await this.db.query(
+      `INSERT INTO model_usage_ledger(
+         id, user_id, operation_key, entry_sequence, provider, model, pricing_version, status,
+         input_units, output_units, cost_amount, cost_currency
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        input.id,
+        input.userId,
+        input.operationKey,
+        input.entrySequence,
+        input.provider,
+        input.model,
+        input.pricingVersion,
+        input.status,
+        input.inputUnits ?? null,
+        input.outputUnits ?? null,
+        cost?.amount ?? null,
+        cost?.currency ?? null,
+      ],
+    );
+  }
+
+  async appendAudit(input: {
+    id: string;
+    userId: string;
+    actorSessionId?: string;
+    action: string;
+    targetType: string;
+    targetId?: string;
+    details?: Record<string, unknown>;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO audit_ledger_entries(
+         id, user_id, actor_session_id, action, target_type, target_id, details
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.id,
+        input.userId,
+        input.actorSessionId ?? null,
+        input.action,
+        input.targetType,
+        input.targetId ?? null,
+        input.details ?? {},
+      ],
+    );
+  }
+}
