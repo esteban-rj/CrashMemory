@@ -1,0 +1,14 @@
+{
+  "name": "@crashmemory/scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/scheduler.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@crashmemory/contracts": "workspace:*"
+  }
+}

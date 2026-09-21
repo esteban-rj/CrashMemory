@@ -1,0 +1,17 @@
+{
+  "name": "@crashmemory/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx test/server.test.ts"
+  },
+  "dependencies": {
+    "@crashmemory/contracts": "workspace:*",
+    "fastify": "5.12.5"
+  }
+}

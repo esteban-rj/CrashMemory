@@ -1,0 +1,33 @@
+{
+  "name": "crashmemory",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24.14.1 <25",
+    "pnpm": ">=11.25.0 <12"
+  },
+  "scripts": {
+    "demo": "pnpm --filter @crashmemory/api demo",
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "check:workspace": "node scripts/check-workspace.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "check:secrets": "node --test test/check-secrets.test.mjs && node scripts/check-secrets.mjs",
+    "check:readme": "node scripts/check-readme-change.mjs",
+    "check": "pnpm check:workspace && pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm check:secrets"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.10.0",
+    "eslint": "10.11.0",
+    "prettier": "3.9.8",
+    "tsx": "4.20.6",
+    "turbo": "2.11.2",
+    "typescript-eslint": "8.70.0",
+    "typescript": "5.9.3"
+  }
+}
