@@ -1,10 +1,10 @@
-name: ${COMPOSE_PROJECT_NAME:-crashmemory-v01}
+name: ${COMPOSE_PROJECT_NAME:-crashmemory-v02}
 
 services:
   postgres:
     image: postgres:17.6-alpine
     environment:
-      POSTGRES_DB: crashmemory
+      POSTGRES_DB: ${POSTGRES_DB:-crashmemory_v02}
       POSTGRES_USER: crashmemory
       POSTGRES_PASSWORD: crashmemory
     ports:
@@ -12,7 +12,11 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U crashmemory -d crashmemory"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U crashmemory -d ${POSTGRES_DB:-crashmemory_v02}",
+        ]
       interval: 5s
       timeout: 3s
       retries: 20

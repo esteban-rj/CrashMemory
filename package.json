@@ -8,6 +8,8 @@
   },
   "scripts": {
     "demo": "pnpm --filter @crashmemory/api demo",
+    "db:migrate": "pnpm --filter @crashmemory/db migrate",
+    "db:seed": "pnpm --filter @crashmemory/db seed",
     "dev": "turbo run dev --parallel",
     "build": "turbo run build",
     "check:workspace": "node scripts/check-workspace.mjs",

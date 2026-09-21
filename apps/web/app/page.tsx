@@ -1,6 +1,4 @@
 export default function HomePage() {
-  const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:4310";
-
   return (
     <main>
       <h1>CrashMemory</h1>
@@ -10,9 +8,7 @@ export default function HomePage() {
       <p>
         Esta pantalla es un esqueleto. La demo sintética está en la API local.
       </p>
-      <a href={`${apiBaseUrl}/api/v1/demo/obligations`}>
-        Ver obligación sintética
-      </a>
+      <a href="/api/v1/demo/obligations">Ver obligación sintética</a>
     </main>
   );
 }

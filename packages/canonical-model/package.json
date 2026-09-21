@@ -1,0 +1,17 @@
+{
+  "name": "@crashmemory/canonical-model",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx test/canonical-model.test.ts"
+  },
+  "dependencies": {
+    "@crashmemory/contracts": "workspace:*"
+  }
+}
