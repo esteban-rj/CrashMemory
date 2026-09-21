@@ -1,0 +1,55 @@
+name: ${COMPOSE_PROJECT_NAME:-crashmemory-v01}
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: crashmemory
+      POSTGRES_USER: crashmemory
+      POSTGRES_PASSWORD: crashmemory
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crashmemory -d crashmemory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:8.4.0-alpine
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6389}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  minio:
+    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: crashmemory
+      MINIO_ROOT_PASSWORD: crashmemory-local-only
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9009}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9010}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

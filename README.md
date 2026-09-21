@@ -1,67 +1,83 @@
-# CrashMemory — Cerebro Personal
+# CrashMemory — Foundation V01
 
-Primera versión: conectar Gmail, detectar obligaciones con evidencia y recibir recordatorios por Telegram. Una web mínima permitirá revisar obligaciones, corregirlas y marcarlas como pagadas.
+CrashMemory empieza con el flujo Gmail → obligaciones con evidencia → avisos por Telegram. Esta entrega deja el monorepo, los contratos y una demo sintética local. No conecta Gmail, no persiste datos, no autentica usuarios y no envía Telegram todavía.
 
-**Estado actual: planificación.** El repositorio contiene la especificación, su revisión y el plan de desarrollo. Todavía no contiene una aplicación ejecutable, servicios Docker ni comandos de instalación del producto.
+## Requisitos
 
-## Documentación
+- Node `24.14.1` y pnpm `11.25.0` (Corepack).
+- Docker Compose es opcional para ejecutar los servicios locales de base. La demo de API no requiere Docker ni credenciales cloud.
 
-| Documento | Uso |
-| --- | --- |
-| [Especificación v1.0](docs/specs/cerebro-personal-v1.0.md) | Referencia original del producto y sus requisitos. |
-| [Revisión técnica](docs/planning/revision-spec.md) | Vacíos, riesgos y ajustes propuestos antes de implementar. |
-| [Plan multisesión](docs/planning/plan-multisesion.md) | Sesiones, agentes, dependencias, ramas, entregables e integración. |
-| [Plantilla de sesión](docs/planning/plantilla-sesion.md) | Instrucciones y acta de entrega para cada sesión. |
-| [Reglas para agentes](AGENTS.md) | Restricciones persistentes de modelos, concurrencia, worktrees e integración. |
+## Arranque comprobable
 
-## Alcance y sesiones del MVP 1
+```bash
+pnpm install --frozen-lockfile
+pnpm demo
+```
 
-**10 sesiones de implementación y validación + 1 sesión coordinadora = 11 sesiones pendientes.** Máximo cuatro activas simultáneamente, incluyendo coordinación e hijas.
+La demo escucha sólo en `http://127.0.0.1:4310`. En otra terminal, compruebe:
 
-El alcance incluye cuerpo de correos y PDF adjuntos con texto, sincronización incremental, reconciliación, evidencia, avisos Telegram y gestión web mínima. Conserva autenticación, privacidad, registro/límites de costos y recuperación de datos. Los escaneos que requieran OCR quedan para revisión manual.
+```bash
+curl http://127.0.0.1:4310/healthz
+curl http://127.0.0.1:4310/api/v1/demo/obligations
+```
 
-Chat, Calendar, contratos, gastos, recurrencias, importaciones generales, búsqueda semántica, grafo, MCP y WhatsApp se difieren. El plan vigente usa V01–V10; sustituye la agenda anterior S01–S26.
+La primera respuesta es `{ "status": "ok", "mode": "demo" }`. La segunda contiene una única obligación sintética, con importe decimal `"48250.00"`, moneda `COP`, fecha civil en `America/Bogota` y la marca `"synthetic-demo"`; no son datos reales ni persistentes.
 
-## Cómo usar este repositorio ahora
+El esqueleto web se puede abrir independientemente con `pnpm --filter @crashmemory/web dev` en `http://127.0.0.1:3000`. Muestra que la interfaz todavía es un esqueleto y enlaza a la demo API; las pantallas de gestión llegan en V08. Para aislar otro worktree, fije ambos puertos y el enlace público de la API, por ejemplo: `API_PORT=44310 pnpm demo` y `WEB_PORT=3301 API_BASE_URL=http://127.0.0.1:44310 pnpm --filter @crashmemory/web dev`.
 
-1. Leer la revisión y las decisiones del alcance reducido que debe cerrar V01.
-2. Consultar la tabla de sesiones y comenzar con I00 y V01; después V02 y V03.
-3. Para cada sesión, completar la plantilla con el commit base de `origin/main`, el agente, los archivos propios y los criterios de aceptación.
-4. Ejecutar cada sesión en un worktree y una rama exclusivos. Contar coordinadores, revisores y sesiones hijas dentro del límite global de **cuatro sesiones activas**.
-5. Hacer push inmediatamente después de cada commit, incluidos los commits intermedios y de integración.
-6. Al terminar cada sesión, validar e integrar su entrega con la actualización correspondiente de este README, pushear `main` y verificar el SHA remoto.
+## Servicios locales opcionales
 
-La política de integración y los comandos de referencia están en el [plan multisesión](docs/planning/plan-multisesion.md). Las sesiones de desarrollo siguen planificadas; la elaboración de estos documentos no las ha iniciado.
+Copie la configuración de ejemplo sólo si va a ejecutar Compose. Los valores incluidos son exclusivos para desarrollo local y no deben reutilizarse fuera de esa máquina.
 
-## Hitos previstos
+```bash
+cp .env.example .env
+docker compose --env-file .env -f infra/compose/docker-compose.yml up -d
+docker compose --env-file .env -f infra/compose/docker-compose.yml ps
+```
 
-| Hito | Resultado | Estado |
-| --- | --- | --- |
-| S00 | Especificación archivada, revisión y plan multisesión | Completada; [acta](docs/sessions/S00.md) |
-| Plan v1.1 | Alcance Gmail/Telegram y push tras cada commit | [Acta de actualización](docs/sessions/S00-mvp1.md) |
-| Base | Contratos, monorepo, memoria segura y jobs durables (V01–V03) | Pendiente |
-| MVP 1 | Gmail → obligación con evidencia → reconciliación → notificación Telegram, web mínima y operación (V04–V10) | Pendiente |
-| Versiones posteriores | Funcionalidades ampliadas del spec | Diferidas, fuera del primer MVP |
+El proyecto Compose se llama `crashmemory-v01` por defecto y publica sólo en loopback: PostgreSQL `127.0.0.1:54329`, Redis `127.0.0.1:6389`, MinIO API `127.0.0.1:9009` y consola `127.0.0.1:9010`. Cambie `COMPOSE_PROJECT_NAME` y los cuatro puertos `*_PORT` de `.env` para otro worktree. Para limpiar únicamente estos volúmenes locales:
 
-## Instrucciones de uso después de cada integración
+```bash
+docker compose --env-file .env -f infra/compose/docker-compose.yml down -v
+```
 
-Cada entrega a `main` debe actualizar este archivo con información comprobada:
+En este host la VM Docker usa el contexto `colima-crashmemory`; selecciónelo sólo si también usa Colima: `docker --context colima-crashmemory compose --env-file .env -f infra/compose/docker-compose.yml ps`.
 
-- Funcionalidad disponible y pasos concretos para utilizarla.
-- Requisitos, configuración y nombres de variables necesarias, sin valores secretos.
-- Comandos que existan en ese commit, rutas de acceso y resultado esperado.
-- Migraciones, reinicios o cambios de compatibilidad requeridos al actualizar.
-- Limitaciones actuales y solución de errores habituales.
-- Estado del hito y enlace al acta de la sesión integrada.
+V01 no crea tablas ni migraciones. V02 añadirá el esquema PostgreSQL; V03 conectará Redis al procesamiento durable y V02/V03 crearán el bucket/almacenamiento cuando exista el adaptador de objetos.
 
-Las entregas internas deben explicar cómo verificarlas o administrarlas. Una entrega de documentación debe explicar cómo usar el documento nuevo. V01 añadirá a CI una comprobación que exija cambios en el README; la revisión de integración verificará que las instrucciones sean útiles y correctas.
+## Verificación
 
-## Commit y push
+```bash
+pnpm check
+pnpm build
+pnpm audit
+```
 
-Todo commit se publica inmediatamente en su rama remota. Cada integración termina además con push de `main`. Si falla un push, se resuelve antes de continuar nuevos entregables o integraciones dependientes; nunca se fuerza el historial. Los comandos y el tratamiento de ramas protegidas están en el [protocolo del plan](docs/planning/plan-multisesion.md).
+`pnpm check` verifica estructura, tipos, tests de schemas/API y el escáner de credenciales sobre archivos versionados, staged y sin staging. El escáner incluye una fixture sintética aislada que demuestra detección, sin contener una credencial utilizable. `pnpm build` compila los esqueletos y construye la web. CI ejecuta estos checks y además exige que cada entrega cambie este README frente a su base.
 
-## Principios del desarrollo
+## Contratos de la base
 
-PostgreSQL será la fuente de verdad. Todo conocimiento inferido deberá tener evidencia. La IA se accederá mediante un gateway sustituible. El procesamiento será incremental e idempotente, con privacidad y aislamiento por usuario.
+- [Modelo canónico](docs/contracts/canonical-model-v1.md): identidad local separada de OAuth Gmail, dinero, fechas, evidencia, versiones, correcciones, avisos y límites de IA.
+- [Contrato HTTP](docs/contracts/http-v1.md): endpoints disponibles y rutas reservadas.
+- [Eventos y outbox](docs/contracts/events-v1.md): catálogo versionado y recuperación durable prevista.
+- [ERD inicial](docs/contracts/erd-v1.md): pertenencia, inmutabilidad y restricciones que V02 debe preservar.
+- [ADR de fundación](docs/adr/0001-foundation-decisions.md): decisiones cerradas para el alcance reducido.
 
-Los datos personales, correos reales, documentos del usuario, tokens y secretos permanecerán fuera de Git. Las pruebas versionadas utilizarán datos sintéticos o anonimizados.
+Los schemas Zod ejecutables viven en `@crashmemory/contracts`. Aceptan decimales como cadenas, fechas civiles reales e información de evidencia/eventos versionada; rechazan números flotantes, fechas inválidas, evidencia PDF incompleta y eventos no versionados.
+
+## Estructura
+
+`apps/api` contiene la demo Fastify. `apps/web` es un esqueleto Next.js. `apps/worker` y `apps/scheduler` son puntos de entrada sin procesamiento funcional hasta V03 y V07. `packages/contracts` es el único contrato compartido creado por V01. `infra/compose` contiene PostgreSQL, Redis y MinIO para los siguientes hitos, aislados por proyecto y puertos.
+
+## Límites de seguridad y alcance
+
+No agregue secretos a `.env.example`, código, fixtures, logs ni Git. Use credenciales reales sólo en archivos locales ignorados. La autenticación local definida aquí usará contraseña hasheada y sesión opaca de servidor; es distinta del consentimiento Gmail. Chat, Calendar, gastos, contratos como negocio, OCR, WhatsApp, búsquedas semánticas, grafo y MCP permanecen fuera del MVP 1.
+
+## Estado
+
+| Hito    | Resultado                                                                    | Estado                                                                                       |
+| ------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| V01     | Contratos, demo, monorepo, Compose y CI                                      | Lista para integración tras las validaciones registradas en [el acta](docs/sessions/V01.md). |
+| V02     | Memoria segura y autenticación                                               | Pendiente.                                                                                   |
+| V03     | Runtime durable                                                              | Pendiente.                                                                                   |
+| V04–V10 | Gmail, extracción, reconciliación, Telegram, web, ciclo de vida y validación | Pendiente.                                                                                   |
