@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "CrashMemory demo",
-  description: "Synthetic local demo for the CrashMemory foundation",
+  title: "CrashMemory · Obligaciones",
+  description: "Gestiona obligaciones, evidencias y avisos de CrashMemory.",
 };
 
 export default function RootLayout({

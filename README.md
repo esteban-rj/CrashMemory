@@ -1,6 +1,19 @@
 # CrashMemory — Gmail, obligaciones con evidencia y avisos Telegram
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La web mínima sigue pendiente. El flujo se valida con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega; V08 ofrece la web mínima de gestión. El flujo se valida con servicios locales y proveedores simulados.
+
+## Web mínima V08
+
+La web se ejecuta en `apps/web` y consume la API mediante el rewrite de mismo origen. En una terminal, con la API persistente disponible en `4318`, arránquela así:
+
+```bash
+WEB_PORT=3008 API_INTERNAL_URL=http://127.0.0.1:4318 \
+  pnpm --filter @crashmemory/web dev
+```
+
+Abra <http://127.0.0.1:3008> e inicie sesión con el usuario creado por `pnpm db:seed`. La sesión usa la cookie HttpOnly emitida por la API y conserva el CSRF recibido en el login; un `401` devuelve la pantalla de acceso. Desde la interfaz puede conectar Gmail, consultar el estado de sincronización, listar obligaciones, abrir el detalle con historial y evidencia autorizada, ver revisiones de extracción, confirmar/corregir/pagar/descartar, resolver conflictos y generar el código de vínculo de Telegram. Las mutaciones envían `Origin`, JSON, CSRF y `expectedVersion`; un `409` refresca el detalle para evitar sobrescribir otra revisión.
+
+El callback público de Gmail usa `/api/v1/gmail/callback` a través del rewrite y la API devuelve `303` a la ruta web. Las acciones de desconexión, borrado y exportación quedan pendientes de las rutas de ciclo de vida V09; esta UI no inventa esos endpoints.
 
 ## Reconciliación V06 y API
 
