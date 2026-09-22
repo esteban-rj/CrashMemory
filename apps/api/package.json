@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "demo": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
+    "dev": "node --import tsx src/server.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --import tsx test/*.test.ts"

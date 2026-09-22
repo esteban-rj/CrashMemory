@@ -107,14 +107,11 @@ export async function normalizeMessage(
     if (isAttachment(part)) {
       const attachmentId =
         part.body?.attachmentId ?? `inline-${generatedAttachment++}`;
-      const attachmentBytes = part.body?.attachmentId
-        ? await downloadAttachment(part.body.attachmentId)
-        : bytes;
       attachments.push({
         externalAttachmentId: attachmentId,
         fileName: part.filename || `attachment-${generatedAttachment}`,
         mediaType: mimeType,
-        bytes: attachmentBytes,
+        bytes,
       });
       return;
     }
@@ -404,25 +401,33 @@ export class GmailSyncService {
     }
   }
 
-  private async materialize(ids: string[]): Promise<NormalizedMessage[]> {
+  private async persistBatches(
+    ids: string[],
+    reason: "bootstrap" | "incremental" | "resync",
+  ): Promise<number> {
     const uniqueIds = [...new Set(ids)];
-    const materialized = await Promise.allSettled(
-      uniqueIds.map(async (id) => {
-        const message = await this.remote.getMessage(id);
-        return normalizeMessage(message, (attachmentId) =>
-          this.remote.getAttachment(message.id, attachmentId),
-        );
-      }),
-    );
-    const messages: NormalizedMessage[] = [];
-    for (const result of materialized) {
-      if (result.status === "fulfilled") {
-        messages.push(result.value);
-      } else if (!(result.reason instanceof GmailMessageNotFoundError)) {
-        throw result.reason;
+    let persisted = 0;
+    for (let offset = 0; offset < uniqueIds.length; offset += 4) {
+      const materialized = await Promise.allSettled(
+        uniqueIds.slice(offset, offset + 4).map(async (id) => {
+          const message = await this.remote.getMessage(id);
+          return normalizeMessage(message, (attachmentId) =>
+            this.remote.getAttachment(message.id, attachmentId),
+          );
+        }),
+      );
+      const messages: NormalizedMessage[] = [];
+      for (const result of materialized) {
+        if (result.status === "fulfilled") {
+          messages.push(result.value);
+        } else if (!(result.reason instanceof GmailMessageNotFoundError)) {
+          throw result.reason;
+        }
       }
+      await this.persistence.persistPage({ messages, reason });
+      persisted += messages.length;
     }
-    return messages;
+    return persisted;
   }
 
   /**
@@ -439,11 +444,10 @@ export class GmailSyncService {
         pageToken,
         maxResults: Math.min(100, remaining),
       });
-      const messages = await this.materialize(
+      remaining -= await this.persistBatches(
         page.messageIds.slice(0, remaining),
+        reason,
       );
-      await this.persistence.persistPage({ messages, reason });
-      remaining -= messages.length;
       pageToken = remaining > 0 ? page.nextPageToken : undefined;
     } while (pageToken);
     await this.incremental(snapshot.historyId, reason);
@@ -461,8 +465,7 @@ export class GmailSyncService {
           startHistoryId,
           pageToken,
         });
-        const messages = await this.materialize(page.messageIds);
-        await this.persistence.persistPage({ messages, reason });
+        await this.persistBatches(page.messageIds, reason);
         // A checkpoint never advances until this page's message data and its
         // outbox event are committed. A crash only causes a harmless replay.
         if (page.historyId) lastHistoryId = page.historyId;

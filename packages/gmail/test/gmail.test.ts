@@ -64,6 +64,88 @@ test("uses externally stored HTML as the body fallback", async () => {
   assert.equal(normalized.attachments.length, 0);
 });
 
+test("downloads each attachmentId once while normalizing a message", async () => {
+  const calls: string[] = [];
+  const normalized = await normalizeMessage(
+    {
+      id: "m-once",
+      historyId: "10",
+      payload: {
+        mimeType: "application/pdf",
+        filename: "invoice.pdf",
+        body: { attachmentId: "pdf-1" },
+      },
+    },
+    async (id) => {
+      calls.push(id);
+      return new Uint8Array([37, 80, 68, 70]);
+    },
+  );
+  assert.deepEqual(calls, ["pdf-1"]);
+  assert.equal(normalized.attachments[0]?.bytes.byteLength, 4);
+});
+
+test("Gmail persists bounded batches and leaves the cursor untouched after a late failure", async () => {
+  const saved: string[][] = [];
+  const cursors: string[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  let failLast = true;
+  const remote: GmailRemote = {
+    async getProfile() {
+      return { emailAddress: "synthetic@example.test", historyId: "20" };
+    },
+    async listMessages() {
+      return { messageIds: [] };
+    },
+    async listHistory() {
+      return {
+        historyId: "21",
+        messageIds: Array.from({ length: 100 }, (_, index) => `m-${index}`),
+      };
+    },
+    async getMessage(id) {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      if (id === "m-99" && failLast) throw new Error("late Gmail failure");
+      return {
+        id,
+        historyId: "21",
+        payload: { mimeType: "text/plain", body: { data: b64(id) } },
+      };
+    },
+    async getAttachment() {
+      return new Uint8Array();
+    },
+    async watch() {
+      return { historyId: "21", expiration: new Date() };
+    },
+  };
+  const persistence: GmailPersistence = {
+    async persistPage({ messages }) {
+      assert.ok(messages.length <= 4);
+      saved.push(messages.map((message) => message.externalId));
+    },
+    async confirmCursor(value) {
+      cursors.push(value);
+    },
+    async recordWatch() {},
+    async recordSyncFailure() {},
+  };
+  const service = new GmailSyncService(remote, persistence);
+  await assert.rejects(() => service.incremental("20"), /late Gmail failure/);
+  assert.deepEqual(cursors, []);
+  assert.equal(saved.length, 24);
+  assert.equal(maximumActive, 4);
+  failLast = false;
+  await service.incremental("20");
+  assert.deepEqual(cursors, ["21"]);
+  assert.equal(saved.length, 49);
+  assert.deepEqual(saved[0], saved[24]);
+});
+
 test("history cursor advances only after durable pages and replays duplicate notifications", async () => {
   const persisted: string[][] = [];
   const cursors: string[] = [];

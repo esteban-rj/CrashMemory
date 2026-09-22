@@ -24,7 +24,7 @@ type Conflict = {
   id: string;
   reason: string;
   state: string;
-  proposal: unknown;
+  proposal: Partial<Pick<Obligation, "title" | "amount" | "due">>;
   createdAt: string;
 };
 type Detail = {
@@ -72,7 +72,19 @@ const labels: Record<string, string> = {
   discarded: "Descartada",
   manual_review: "Revisión manual",
   failed: "Fallida",
+  active: "Activa",
+  pending: "Pendiente",
+  disconnected: "Desconectada",
+  revoked: "Desconectada",
+  error: "Necesita atención",
+  scheduled: "Programado",
+  delivering: "En entrega",
+  resolved: "Resuelto",
+  cancelled: "Cancelado",
 };
+const reminderKind = (kind?: string) =>
+  ({ one_day: "Un día antes", due: "En el vencimiento" })[kind ?? ""] ??
+  "Recordatorio";
 const dueText = (due: Obligation["due"]) =>
   !due
     ? "Sin fecha"
@@ -96,6 +108,29 @@ const reviewReason = (code?: string) =>
     invalid_evidence: "La evidencia extraída no pudo validarse.",
     extraction_failed: "La extracción falló y debe revisarse.",
   })[code ?? ""] ?? "La extracción quedó bloqueada para revisión manual.";
+const fieldName = (field: string) =>
+  ({ title: "título", amount: "importe", due: "vencimiento" })[field] ?? field;
+const conflictReason = (reason: string) =>
+  ({
+    protected_field: "Una propuesta cambia un dato protegido",
+    out_of_order: "La propuesta proviene de un correo anterior",
+    terminal_state: "La obligación ya está pagada o descartada",
+    unresolved_conflict: "Hay otro conflicto por resolver",
+  })[reason] ?? "La propuesta requiere revisión";
+const conflictState = (state: string) =>
+  ({ open: "Pendiente", accepted: "Aceptada", rejected: "Rechazada" })[state] ??
+  state;
+const sessionKey = "crashmemory.session";
+function savedSession(value?: string): string | null {
+  try {
+    if (value === undefined) return sessionStorage.getItem(sessionKey);
+    if (value) sessionStorage.setItem(sessionKey, value);
+    else sessionStorage.removeItem(sessionKey);
+  } catch {
+    // A blocked sessionStorage must not prevent cookie-backed login/logout.
+  }
+  return null;
+}
 
 export default function HomePage() {
   const sessionGeneration = useRef(0);
@@ -134,7 +169,7 @@ export default function HomePage() {
     setReminders([]);
     setAttempts({});
     setMessage("");
-    sessionStorage.removeItem("crashmemory.session");
+    savedSession("");
   }, []);
   const isStale = (error: unknown): boolean =>
     error instanceof Error && error.name === "CrashMemoryStaleResponse";
@@ -248,19 +283,23 @@ export default function HomePage() {
     setReminders(reminderState);
   }, [request, requestPage]);
   useEffect(() => {
-    const saved = sessionStorage.getItem("crashmemory.session");
+    const saved = savedSession();
     if (saved) {
       try {
         const state = JSON.parse(saved) as {
           csrf: string;
           user: { email: string; timeZone: string };
         };
-        if (state.csrf && state.user) {
+        if (
+          typeof state.csrf === "string" &&
+          typeof state.user?.email === "string" &&
+          typeof state.user?.timeZone === "string"
+        ) {
           setCsrf(state.csrf);
           setUser(state.user);
         }
       } catch {
-        sessionStorage.removeItem("crashmemory.session");
+        savedSession("");
       }
     }
   }, []);
@@ -268,7 +307,7 @@ export default function HomePage() {
     if (user)
       void load().catch((error: Error) => {
         if (isStale(error)) return;
-        sessionStorage.removeItem("crashmemory.session");
+        savedSession("");
         setMessage(error.message);
       });
   }, [user, load]);
@@ -287,8 +326,7 @@ export default function HomePage() {
       });
       setCsrf(result.csrfToken);
       setUser(result.user);
-      sessionStorage.setItem(
-        "crashmemory.session",
+      savedSession(
         JSON.stringify({ csrf: result.csrfToken, user: result.user }),
       );
       setPassword("");
@@ -377,13 +415,24 @@ export default function HomePage() {
   }
   async function disconnectGmail(connectionId: string) {
     try {
-      await request("/api/v1/lifecycle/gmail/disconnect", {
-        method: "POST",
-        headers: { "X-CSRF-Token": csrf },
-        body: JSON.stringify({ connectionId }),
-      });
+      const result = await request<{ remoteRevocation: string }>(
+        "/api/v1/lifecycle/gmail/disconnect",
+        {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrf },
+          body: JSON.stringify({ connectionId }),
+        },
+      );
       await load();
-      setMessage("Gmail desconectado. Los datos históricos se conservaron.");
+      setMessage(
+        `Gmail desconectado. Los datos históricos se conservaron.${
+          result.remoteRevocation === "failed"
+            ? " Google no confirmó la revocación remota; revísala en tu cuenta Google."
+            : result.remoteRevocation === "not_configured"
+              ? " La revocación remota no está configurada."
+              : ""
+        }`,
+      );
     } catch (error) {
       if (isStale(error)) return;
       const typed = error as Error & { status?: number };
@@ -674,12 +723,14 @@ function Connections({
               {item.errorCode && (
                 <small className="error">Estado: {item.errorCode}</small>
               )}
-              <button
-                className="button-quiet"
-                onClick={() => onDisconnect(item.id)}
-              >
-                Desconectar Gmail
-              </button>
+              {item.state !== "revoked" && (
+                <button
+                  className="button-quiet"
+                  onClick={() => onDisconnect(item.id)}
+                >
+                  Desconectar Gmail
+                </button>
+              )}
             </div>
           ))
         ) : (
@@ -709,9 +760,11 @@ function Connections({
           </small>
         </div>
         <button onClick={onTelegram}>Generar código de vínculo</button>
-        <button className="button-quiet" onClick={onUnlink}>
-          Desvincular Telegram
-        </button>
+        {(telegram?.linked || telegram?.state === "linked") && (
+          <button className="button-quiet" onClick={onUnlink}>
+            Desvincular Telegram
+          </button>
+        )}
       </div>
     </section>
   );
@@ -756,7 +809,7 @@ function Alerts({
           {reminders.map((reminder) => (
             <li className="reminder-item" key={reminder.id}>
               <div>
-                <strong>{reminder.kind ?? "Recordatorio"}</strong>
+                <strong>{reminderKind(reminder.kind)}</strong>
                 <small>
                   {new Date(reminder.scheduledFor).toLocaleString("es-CO")}
                 </small>
@@ -966,7 +1019,10 @@ function DetailView({
           <h3>Campos protegidos</h3>
           <p className="muted">
             Confirmados o corregidos manualmente:{" "}
-            {detail.protectedFields.map((field) => field.field).join(", ")}.
+            {detail.protectedFields
+              .map((field) => fieldName(field.field))
+              .join(", ")}
+            .
           </p>
         </section>
       )}
@@ -975,8 +1031,21 @@ function DetailView({
           <h3>Conflictos</h3>
           {detail.conflicts.map((conflict) => (
             <article className="conflict" key={conflict.id}>
-              <strong>{conflict.reason}</strong>
-              <p>{JSON.stringify(conflict.proposal)}</p>
+              <strong>{conflictReason(conflict.reason)}</strong>
+              <p>Estado: {conflictState(conflict.state)}</p>
+              <p>
+                Propuesta:{" "}
+                {[
+                  conflict.proposal.title &&
+                    `título: ${conflict.proposal.title}`,
+                  conflict.proposal.amount &&
+                    `importe: ${money(conflict.proposal.amount)}`,
+                  conflict.proposal.due &&
+                    `vencimiento: ${dueText(conflict.proposal.due)}`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "Sin valores disponibles"}
+              </p>
               {conflict.state === "open" && (
                 <div className="actions">
                   <button

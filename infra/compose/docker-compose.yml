@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-crashmemory_v02}
       POSTGRES_USER: crashmemory
-      POSTGRES_PASSWORD: crashmemory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crashmemory}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-54329}:5432"
     volumes:
@@ -39,8 +39,8 @@ services:
     image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: crashmemory
-      MINIO_ROOT_PASSWORD: crashmemory-local-only
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-crashmemory}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-crashmemory-local-only}
     ports:
       - "127.0.0.1:${MINIO_PORT:-9009}:9000"
       - "127.0.0.1:${MINIO_CONSOLE_PORT:-9010}:9001"

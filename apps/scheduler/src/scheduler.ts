@@ -148,9 +148,10 @@ async function main(): Promise<void> {
     await queue.close();
     await connection.quit();
     await pool.end();
+    console.log(JSON.stringify({ component: "scheduler", event: "stopped" }));
   };
-  process.once("SIGINT", () => void shutdown());
-  process.once("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((error: unknown) => {

@@ -3,11 +3,48 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": ["API_INTERNAL_URL"],
       "outputs": []
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "API_INTERNAL_URL",
+        "API_PORT",
+        "APP_ENV",
+        "APP_ORIGIN",
+        "APP_SESSION_COOKIE_NAME",
+        "APP_SESSION_COOKIE_SECURE",
+        "APP_SESSION_TTL_SECONDS",
+        "CREDENTIAL_ACTIVE_KEY_VERSION",
+        "CREDENTIAL_ENCRYPTION_KEYS_JSON",
+        "DATABASE_URL",
+        "EXTRACTION_DEFAULT_PRIVACY_PROFILE",
+        "GMAIL_CLIENT_ID",
+        "GMAIL_CLIENT_SECRET",
+        "GMAIL_PUBSUB_TOPIC",
+        "GMAIL_REDIRECT_URI",
+        "GMAIL_SYNC_ENABLED",
+        "GMAIL_SYNC_INTERVAL_MS",
+        "GOOGLE_PUBSUB_AUDIENCE",
+        "GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL",
+        "LIFECYCLE_JOURNAL_KEY_BASE64",
+        "LIFECYCLE_JOURNAL_PATH",
+        "LOG_LEVEL",
+        "MODEL_*",
+        "NOTIFICATIONS_AUTOMATIC_ENABLED",
+        "OAUTH_STATE_SECRET_BASE64",
+        "OBJECT_STORAGE_ACCESS_KEY",
+        "OBJECT_STORAGE_BUCKET",
+        "OBJECT_STORAGE_ENDPOINT",
+        "OBJECT_STORAGE_SECRET_KEY",
+        "OUTBOX_DISPATCH_INTERVAL_MS",
+        "REDIS_URL",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_POLL_INTERVAL_MS",
+        "WEB_PORT"
+      ]
     },
     "typecheck": {
       "dependsOn": ["^typecheck"],

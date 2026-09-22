@@ -128,6 +128,15 @@ try {
   console.log(
     `CrashMemory synthetic demo API listening on http://127.0.0.1:${port}`,
   );
+  let stopping = false;
+  const shutdown = async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    await app.close();
+    console.log(JSON.stringify({ component: "api", event: "stopped" }));
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 } catch (error) {
   app.log.error({ err: error }, "server startup failed");
   process.exitCode = 1;

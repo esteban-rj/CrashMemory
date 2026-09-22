@@ -16,6 +16,29 @@ function trusted(request: FastifyRequest, appOrigin: string): boolean {
 
 type Cursor =
   { scheduledFor: string; id: string } | { preparedAt: string; id: string };
+const uuid =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const cursorTime =
+  /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}(?::?\d{2})?)$/;
+
+function validCursorTime(value: string): boolean {
+  const parts = cursorTime.exec(value);
+  if (!parts) return false;
+  const [, year, month, day, hour, minute, second, zone] = parts;
+  const date = new Date(`${year}-${month}-${day}T00:00:00Z`);
+  if (
+    Number(year) < 1 ||
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== `${year}-${month}-${day}` ||
+    Number(hour) > 23 ||
+    Number(minute) > 59 ||
+    Number(second) > 59
+  )
+    return false;
+  if (zone === "Z") return true;
+  const offset = zone!.slice(1).replace(":", "");
+  return Number(offset.slice(0, 2)) <= 15 && Number(offset.slice(2) || 0) <= 59;
+}
 
 function parseLimit(value: unknown): number | null {
   if (value === undefined) return 25;
@@ -41,7 +64,8 @@ function parseCursor(
     if (
       typeof timestamp !== "string" ||
       typeof decoded.id !== "string" ||
-      Number.isNaN(Date.parse(timestamp))
+      !uuid.test(decoded.id) ||
+      !validCursorTime(timestamp)
     )
       return null;
     return kind === "reminders"
@@ -136,7 +160,7 @@ export function registerTelegramRoutes(
           error(request, "unauthenticated", "An active session is required"),
         );
     const params = request.params as { reminderId?: unknown };
-    if (typeof params.reminderId !== "string" || params.reminderId.length === 0)
+    if (typeof params.reminderId !== "string" || !uuid.test(params.reminderId))
       return reply
         .code(400)
         .send(

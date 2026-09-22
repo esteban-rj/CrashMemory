@@ -183,6 +183,33 @@ test(
           404,
         );
         assert.equal((await get("/api/v1/obligations/bad")).statusCode, 400);
+        assert.equal(
+          (await get("/api/v1/reminders/not-a-uuid/attempts")).statusCode,
+          400,
+        );
+        for (const [path, field] of [
+          ["/api/v1/reminders", "scheduledFor"],
+          [`/api/v1/reminders/${randomUUID()}/attempts`, "preparedAt"],
+        ] as const) {
+          const cursor = Buffer.from(
+            JSON.stringify({
+              [field]: "2026-09-22T00:00:00Z",
+              id: "not-a-uuid",
+            }),
+          ).toString("base64url");
+          const response = await get(`${path}?cursor=${cursor}`);
+          assert.equal(response.statusCode, 400, response.body);
+          assert.equal(response.json().error.code, "invalid_pagination");
+          const invalidDate = Buffer.from(
+            JSON.stringify({
+              [field]: "2026-02-31T00:00:00Z",
+              id: randomUUID(),
+            }),
+          ).toString("base64url");
+          const dateResponse = await get(`${path}?cursor=${invalidDate}`);
+          assert.equal(dateResponse.statusCode, 400, dateResponse.body);
+          assert.equal(dateResponse.json().error.code, "invalid_pagination");
+        }
         const detail = await get(`/api/v1/obligations/${first}`);
         assert.equal(detail.json().data.versions[0].evidence[0].quote, text);
         assert.equal(detail.json().data.versions[0].due.date, "2026-10-15");

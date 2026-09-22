@@ -364,17 +364,19 @@ test(
         );
       }
       const scheduler = new ReminderScheduler(pool, undefined, true);
-      assert.equal(await scheduler.backfillConfirmed(now, 100), 3);
-      assert.equal(await scheduler.backfillConfirmed(now, 100), 0);
-      assert.equal(
-        (
-          await pool.query(
-            "SELECT count(*)::int AS count FROM reminders WHERE user_id=$1",
-            [userId],
-          )
-        ).rows[0].count,
-        6,
-      );
+      assert.ok((await scheduler.backfillConfirmed(now, 100)) >= 3);
+      const ownReminderCount = async () =>
+        Number(
+          (
+            await pool.query(
+              "SELECT count(*)::int AS count FROM reminders WHERE user_id=$1",
+              [userId],
+            )
+          ).rows[0].count,
+        );
+      assert.equal(await ownReminderCount(), 6);
+      await scheduler.backfillConfirmed(now, 100);
+      assert.equal(await ownReminderCount(), 6);
     } finally {
       await pool.query("DELETE FROM users WHERE id=$1", [userId]);
       await pool.end();

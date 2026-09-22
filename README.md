@@ -1,419 +1,193 @@
-# CrashMemory — Gmail, obligaciones con evidencia y avisos Telegram
+# CrashMemory
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega; V08 ofrece la web mínima de gestión; V09 añade desconexión, borrado, exportación y restauración offline con barreras contra replays. El flujo se valida con servicios locales y proveedores simulados.
+CrashMemory es un MVP local para convertir correos autorizados de Gmail en obligaciones con evidencia y enviar recordatorios por Telegram. Incluye login, conexión y desconexión de Gmail, sincronización recuperable, lectura del cuerpo y de PDF con texto, extracción estructurada, reconciliación de cambios, correcciones protegidas, avisos durables, una web mínima y operaciones de exportación, borrado, backup y restore.
 
-## Web mínima V08
+La validación V10 usa datos y proveedores simulados. Gmail, Telegram y el modelo remoto reales requieren configuración externa y siguen pendientes de una prueba autorizada con credenciales reales. Los avisos automáticos están apagados de forma predeterminada.
 
-La web se ejecuta en `apps/web` y consume la API mediante el rewrite de mismo origen. En una terminal, con la API persistente disponible en `4318`, arránquela así:
-
-```bash
-WEB_PORT=3008 API_INTERNAL_URL=http://127.0.0.1:4318 \
-  pnpm --filter @crashmemory/web dev
-```
-
-Abra <http://127.0.0.1:3008> e inicie sesión con el usuario creado por `pnpm db:seed`. La sesión usa la cookie HttpOnly emitida por la API y conserva el CSRF recibido en el login; un `401` devuelve la pantalla de acceso. Desde la interfaz puede conectar Gmail, consultar el estado de sincronización, listar obligaciones, abrir el detalle con historial y evidencia autorizada, ver revisiones de extracción, confirmar/corregir/pagar/descartar, resolver conflictos y generar el código de vínculo de Telegram. Las mutaciones envían `Origin`, JSON, CSRF y `expectedVersion`; un `409` refresca el detalle para evitar sobrescribir otra revisión. Las respuestas pendientes se invalidan al cambiar de sesión y los instantes se muestran usando su zona horaria declarada.
-
-La pestaña Avisos consulta todos los cursores de `/api/v1/reminders` y permite abrir los intentos de cada aviso (`sent`, `failed` o `unknown`). La lista de obligaciones y revisiones también consume `meta.nextCursor`, por lo que no oculta elementos después de la primera página. Cada evidencia muestra su página cuando aplica, permite leer el texto autorizado y ofrece la descarga autenticada de `/source`.
-
-El callback público de Gmail usa `/api/v1/gmail/callback` a través del rewrite y la API devuelve `303` a la ruta web. Los botones de desconexión Gmail y desvinculación Telegram llaman las rutas de ciclo de vida de V09; la API informa si la revocación remota de Google se confirmó.
-
-La entrega V08 está integrada en `origin/main` en `bbc28e5e38570727c0e15eda617afc6d50bfa204`; su CI de producto (`35756161282`) terminó correctamente.
-
-## Reconciliación V06 y API
-
-V06 conserva un ID lógico por factura con emisor y número de factura/recibo/liquidación comprobados en la misma cita. Una cuenta de cliente por sí sola no une facturas mensuales. Candidatos sin ancla quedan separados para revisión; un correo más antiguo no revierte silenciosamente un vencimiento reciente. Cada cambio crea una versión inmutable. Confirmar o corregir protege los campos frente a inferencias futuras; éstas se presentan como conflictos con su propuesta y evidencia. Pagar y descartar cancelan avisos y no se revierten por replay. Sólo las obligaciones `confirmed` con política automática habilitada pueden programar Telegram.
-
-V06 se integró tras QA independiente sobre PostgreSQL limpio: pasaron la cadena candidato V05→worker V06→scheduler V07 y la API de obligaciones con dos usuarios, ambas sin omisiones. También pasaron la migración limpia `0001`–`0008`, `pnpm check` con PostgreSQL/Redis/MinIO locales y `pnpm build`.
-
-La [referencia HTTP V06](docs/contracts/reconciliation-http-v1.md) detalla rutas, cuerpos, estados y errores para la web V08. `GET /api/v1/obligations` lista con cursor; `GET /api/v1/obligations/:id` ofrece histórico, evidencia, conflictos y campos protegidos. `GET /api/v1/evidence/:id`, `/text` y `/source` dan cita, texto y soporte PDF/cuerpo tras comprobar el dueño. `GET /api/v1/extraction/reviews` muestra PDFs escaneados o trabajos bloqueados con un código saneado, sin crear obligaciones ficticias. `POST` sobre `/confirm`, `/correct`, `/discard`, `/pay` y `/resolve` exige cookie, origen, JSON, CSRF y `expectedVersion`; una versión obsoleta devuelve 409.
-
-En este host se levantó el namespace aislado V06 y se aplicó desde cero la cadena, incluido `0007_v05_model_budget_periods.sql` de V05 y `0008_v06_reconciliation.sql`:
-
-```bash
-COMPOSE_PROJECT_NAME=crashmemory-v06 POSTGRES_DB=crashmemory_v06 POSTGRES_PORT=54336 \
-REDIS_PORT=6396 MINIO_PORT=9021 MINIO_CONSOLE_PORT=9022 \
-  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d
-
-DATABASE_URL=postgres://crashmemory:crashmemory@127.0.0.1:54336/crashmemory_v06 \
-  pnpm db:migrate
-```
-
-Para usar la API local en `4316`, configure PostgreSQL y, para abrir originales, MinIO. El nombre del bucket debe existir antes de guardar originales; el pipeline Gmail usa los mismos parámetros de almacenamiento:
-
-```bash
-API_PORT=4316 APP_ENV=local APP_ORIGIN=http://127.0.0.1:3006 \
-APP_SESSION_COOKIE_NAME=crashmemory_v06_session APP_SESSION_COOKIE_SECURE=false \
-DATABASE_URL=postgres://crashmemory:crashmemory@127.0.0.1:54336/crashmemory_v06 \
-OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9021 OBJECT_STORAGE_BUCKET=crashmemory-v06 \
-OBJECT_STORAGE_ACCESS_KEY=crashmemory OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
-  pnpm --filter @crashmemory/api demo
-```
-
-El login local usa el usuario creado con `pnpm db:seed`; V06 no añade registro público. El worker V06 registra el consumidor real `obligation.candidate.created.v1` y el scheduler V07 incluso si Telegram no está configurado; con política automática deshabilitada por defecto no se envían avisos. Para una entrega real se requieren el bot vinculado y `NOTIFICATIONS_AUTOMATIC_ENABLED=true` según la sección V07.
-
-La cadena sintética V05→V06→V07 y la API con dos usuarios se comprobaron en PostgreSQL real usando:
-
-```bash
-TEST_DATABASE_URL=postgres://crashmemory:crashmemory@127.0.0.1:54336/crashmemory_v06 \
-TEST_REDIS_URL=redis://127.0.0.1:6396 \
-TEST_OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9021 \
-TEST_OBJECT_STORAGE_BUCKET=crashmemory-v06-test \
-TEST_OBJECT_STORAGE_ACCESS_KEY=crashmemory \
-TEST_OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
-  pnpm check
-pnpm build
-```
-
-## Requisitos
+## Requisitos y preparación
 
 - Node `24.14.1` y pnpm `11.25.0`.
-- Docker Compose para migraciones y pruebas de integración. En este host se comprobó con el contexto `colima-crashmemory`.
+- Docker Compose. Los comandos siguientes usan el contexto Docker activo; en este repositorio también se probó `--context colima-crashmemory`.
+- PostgreSQL 17, Redis y MinIO incluidos en [infra/compose/docker-compose.yml](infra/compose/docker-compose.yml).
 
-Instale exactamente el lockfile antes del primer arranque:
+Active las versiones fijadas (Volta puede leer los pines de `package.json`), compruebe `node --version`/`pnpm --version`, instale exactamente el lockfile y cree un archivo privado de configuración:
 
 ```bash
+node --version
+pnpm --version
 pnpm install --frozen-lockfile
+cp .env.example .env
+chmod 600 .env
 ```
 
-## Entorno local V04
+Complete `.env` fuera de Git. El Compose local crea el usuario PostgreSQL `crashmemory`, la base de `POSTGRES_DB` y escucha en `POSTGRES_PORT`; use `DATABASE_URL=postgresql://crashmemory:<POSTGRES_PASSWORD>@127.0.0.1:<POSTGRES_PORT>/<POSTGRES_DB>`. Defina la misma contraseña protegida tanto en Compose como en la URL antes de exponer el servicio fuera de localhost. MinIO usa `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`; `OBJECT_STORAGE_ACCESS_KEY` y `OBJECT_STORAGE_SECRET_KEY` deben coincidir con ellos. La plantilla Compose trae valores locales conocidos y sólo publica en `127.0.0.1`; sustitúyalos en una copia protegida para cualquier uso que no sea desarrollo aislado.
 
-V04 usa un namespace propio para PostgreSQL, Redis y MinIO. Arranque PostgreSQL y aplique las migraciones, incluida `0004_v04_gmail_sync.sql`:
+Genere cada clave de 32 bytes localmente, por ejemplo `openssl rand -base64 32`. El keyring tiene forma JSON `{"v1":"<base64-de-32-bytes>"}` y `CREDENTIAL_ACTIVE_KEY_VERSION=v1`; OAuth y journal reciben sendas cadenas base64. No reutilice claves, no registre `.env` y no pegue sus valores en logs o incidencias.
+
+Levante los servicios con los puertos y el namespace elegidos en `.env`:
 
 ```bash
-COMPOSE_PROJECT_NAME=crashmemory-v04 POSTGRES_PORT=54332 POSTGRES_DB=crashmemory_v04 \
-REDIS_PORT=6392 MINIO_PORT=9015 MINIO_CONSOLE_PORT=9016 \
-  docker compose -f infra/compose/docker-compose.yml up -d postgres --wait
-
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
-  pnpm db:migrate
+docker compose --env-file .env -f infra/compose/docker-compose.yml up -d --wait
 ```
 
-Para ejecutar API y scheduler en esta base use `API_PORT=4314`, `APP_ORIGIN=http://127.0.0.1:3004`, `APP_SESSION_COOKIE_NAME=crashmemory_v04_session`, el mismo `DATABASE_URL`, y `REDIS_URL=redis://127.0.0.1:6392`. Antes de habilitar Gmail real, cree un usuario sintético con el comando de la sección siguiente y configure las variables OAuth descritas en [Gmail V04](#gmail-v04).
-
-## Entorno histórico V03
-
-La configuración de ejemplo reserva el proyecto Compose `crashmemory-v03`, PostgreSQL `54331`, Redis `6391`, MinIO `9013/9014`, API `4312` y web `3002`. Los servicios sólo publican en loopback. Para levantar PostgreSQL y aplicar las migraciones ejecutadas en esta entrega:
+Cree en MinIO el bucket indicado por `OBJECT_STORAGE_BUCKET` mediante la consola local configurada en `MINIO_CONSOLE_PORT`. Después aplique migraciones y cree el usuario local:
 
 ```bash
-POSTGRES_PORT=54331 POSTGRES_DB=crashmemory_v03 \
-  docker compose -p crashmemory-v03 \
-  -f infra/compose/docker-compose.yml up -d postgres
-
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
-  pnpm db:migrate
+node scripts/run-local.mjs db:migrate
+node scripts/run-local.mjs db:seed
 ```
 
-El comando es portable y usa el contexto Docker activo. Si su VM es Colima con el contexto configurado como en este host, añada `--context colima-crashmemory` entre `docker` y `compose`.
+El lanzador carga `.env` con `process.loadEnvFile` y pasa el entorno al proceso pnpm sin shell ni imprimir valores. Es necesario porque en Node 24.14.1 se reprodujo que un script hijo iniciado mediante la combinación `--env-file` y `--run` no recibe la variable cargada.
 
-La segunda ejecución de `pnpm db:migrate` responde `Database is up to date`. Cada archivo se aplica bajo advisory lock; un fallo hace rollback y descarta una conexión inutilizable. La migración inicial crea usuarios/sesiones, conexiones y credenciales cifradas, originales/revisiones/cuerpos/adjuntos, blobs, evidencia, obligaciones/versiones/correcciones, cursores, outbox, avisos/intentos y ledgers de uso/auditoría.
+## Arranque y recorrido local
 
-Para limpiar sólo el entorno local V02 después de las pruebas:
+Arranque API, worker, scheduler y web en una terminal:
 
 ```bash
-docker compose -p crashmemory-v03 \
-  -f infra/compose/docker-compose.yml down -v
+node scripts/run-local.mjs dev
 ```
 
-Este último comando elimina la base y el volumen local V02. No es una migración inversa ni debe apuntar a otro proyecto Compose.
+Abra `APP_ORIGIN` e inicie sesión con la cuenta creada por el seed. El origen web sirve `/api` mediante rewrite a `API_INTERNAL_URL`; por eso `GMAIL_REDIRECT_URI` debe usar el origen público de la web, por ejemplo `http://127.0.0.1:3000/api/v1/gmail/callback`, y no el puerto interno de la API.
 
-## Autenticación compatible V02
+El recorrido disponible es:
 
-No existe registro público. Cree un usuario sintético leyendo la contraseña desde el entorno del proceso; el seed no imprime ni guarda la contraseña en Git:
+1. Conectar Gmail y comprobar el estado de sincronización.
+2. Abrir una obligación y revisar título, importe decimal exacto, vencimiento civil o instante con zona, historial y evidencia.
+3. Confirmar, corregir o resolver una propuesta; un `409` refresca la versión actual antes de otra escritura.
+4. Vincular Telegram y consultar avisos e intentos `sent`, `failed` o `unknown`.
+5. Marcar la obligación pagada o descartarla; los avisos futuros se cancelan.
+6. Desconectar Gmail o desvincular Telegram desde Conexiones. La web muestra si Google confirmó la revocación remota.
 
-```bash
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54330/crashmemory_v02 \
-SEED_EMAIL=person@example.test \
-SEED_PASSWORD='use-a-local-password-of-at-least-12-characters' \
-SEED_TIME_ZONE=America/Bogota \
-  pnpm db:seed
-```
+Sin un adaptador local de modelo, `EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only` deja el correo en revisión manual y realiza cero llamadas remotas. `remote-allowed` requiere simultáneamente `MODEL_REMOTE_ENABLED=true`, `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true`, una clave, un modelo y un presupuesto vigente. Esa confirmación sólo registra la decisión operativa de usar un proyecto configurado para no entrenar con sus datos; `store:false` no configura la cuenta, no significa ZDR y no elimina la retención de monitoreo aplicable. La disponibilidad y precisión del modelo configurado no se han probado con datos reales.
 
-Inicie la API persistente en `4311`:
+## Gmail y Pub/Sub
 
-```bash
-API_PORT=4311 \
-APP_ENV=local \
-APP_ORIGIN=http://127.0.0.1:3001 \
-APP_SESSION_COOKIE_NAME=crashmemory_v02_session \
-APP_SESSION_COOKIE_SECURE=false \
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54330/crashmemory_v02 \
-  pnpm --filter @crashmemory/api demo
-```
-
-`POST /api/v1/auth/login` recibe JSON `{ "email", "password" }`; devuelve el usuario, expiración y token CSRF, además de una cookie opaca `HttpOnly`, `SameSite=Lax`, `Path=/`. `POST /api/v1/auth/logout` exige esa cookie, `Content-Type: application/json`, cuerpo `{}` y el header `X-CSRF-Token`. En HTTPS no fije `APP_SESSION_COOKIE_SECURE=false`; el valor predeterminado es seguro.
-
-Las mutaciones con `Origin` sólo aceptan `APP_ORIGIN`. La web evita CORS mediante el rewrite de mismo origen `/api/*` hacia `API_INTERNAL_URL` (por defecto `http://127.0.0.1:4310`; para este worktree use `4311`). La API no habilita CORS con credenciales para orígenes comodín.
-
-La demo sintética de V01 sigue disponible sin DB en `API_PORT=4310 pnpm demo`, con `/healthz`, `/api/v1/contracts` y `/api/v1/demo/obligations`. Sin `DATABASE_URL`, las rutas auth responden `503` en vez de crear sesiones en memoria.
-
-Para abrir el esqueleto web usando el proxy de mismo origen de este worktree:
-
-```bash
-WEB_PORT=3001 API_INTERNAL_URL=http://127.0.0.1:4311 \
-  pnpm --filter @crashmemory/web dev
-```
-
-Con la demo V01 en `4310`, cambie sólo `API_INTERNAL_URL` a `http://127.0.0.1:4310`.
-
-## Claves y secretos
-
-Las contraseñas usan scrypt versionado (`N=16384`, `r=8`, `p=5`) con sal aleatoria. Las sesiones guardan sólo SHA-256 del token opaco y son revocables. Las credenciales de proveedor se cifran con AES-256-GCM, AAD ligado a `userId:sourceConnectionId` y keyring versionado; las llaves se inyectan fuera de Git:
+En Google Cloud configure el scope único `https://www.googleapis.com/auth/gmail.readonly` y registre exactamente `GMAIL_REDIRECT_URI`. Complete `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `OAUTH_STATE_SECRET_BASE64`, el keyring de credenciales y:
 
 ```dotenv
-CREDENTIAL_ACTIVE_KEY_VERSION=v1
-CREDENTIAL_ENCRYPTION_KEYS_JSON={"v1":"BASE64_DE_32_BYTES"}
-OAUTH_STATE_SECRET_BASE64=BASE64_DE_32_BYTES_O_MAS
-```
-
-`.env.example` deja esas variables vacías. El estado OAuth firmado sólo admite rutas locales, incluye usuario y sesión, y usa un nonce persistido que se consume atómicamente una sola vez. V04 usa esa primitiva tanto en el inicio como en el callback Gmail. Los logs Fastify redactan cookies, autorización, contraseñas, tokens y ciphertext; no registran cuerpos de solicitudes.
-
-## Modelo persistente
-
-Las relaciones sensibles usan FKs compuestas con `user_id`. Un ID válido de otro usuario no puede asociarse a una conexión, blob, revisión, adjunto, evidencia, versión, corrección, aviso, intento, nonce o asiento de auditoría. Las claves de objetos son globalmente únicas y el repositorio exige el prefijo `users/<userId>/`.
-
-`numeric` conserva hasta 38 dígitos totales y 18 decimales sin redondear; `NaN` e infinitos se rechazan. Las APIs usan cadenas decimales. Un vencimiento civil conserva `date` y zona IANA separados de un instante. Revisiones, cuerpos, adjuntos, evidencia, versiones, intentos y asientos son append-only frente a `UPDATE`; el borrado en cascada por dueño queda disponible para el ciclo de vida V09.
-
-La frontera aditiva [entrada persistida de extracción](docs/contracts/extraction-input-v1.md) fija la revisión → cuerpo normalizado + adjuntos tipados que V04 producirá y V05 consumirá. Un PDF de evidencia debe pertenecer al mismo usuario y revisión.
-
-## Verificación V02 integrada
-
-Con PostgreSQL V02 saludable se ejecutó:
-
-```bash
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54330/crashmemory_v02 \
-  pnpm check
-pnpm build
-pnpm audit
-```
-
-`pnpm check` ejecuta lint, formato, tipos, scanner de secretos y 17 pruebas: contratos, dinero/fecha, cifrado, redacción, serialización segura de logs, estado OAuth, recuperación de migración fallida, repositorios reales con dos usuarios y login/logout real con origen y CSRF. La prueba OAuth altera un byte de la firma decodificada, por lo que siempre verifica un token criptográficamente distinto. Las pruebas DB rechazan asociación cruzada aunque los IDs ajenos existan y comprueban la inmutabilidad de evidencia. `pnpm build` incluye Next.js y `pnpm audit` terminó sin vulnerabilidades conocidas.
-
-CI levanta PostgreSQL `17.6-alpine`, Redis `8.4.0-alpine` y MinIO, e inyecta las variables `TEST_DATABASE_URL`, `TEST_REDIS_URL` y `TEST_OBJECT_STORAGE_*`; así ejecuta las integraciones V03 sin skips. La tarea Turbo de tests no usa caché, por lo que un resultado anterior sin DB no puede reutilizar pruebas omitidas.
-
-También se ejecutaron web `3001` y API `4311` en paralelo: `GET http://127.0.0.1:3001/api/v1/contracts` atravesó el rewrite de mismo origen y devolvió `200` con `X-CrashMemory-Contract: 2026-09-20.v1`.
-
-## Runtime durable V03
-
-La migración `0002_v03_durable_runtime.sql` registra cada intento de despacho y un recibo durable por `(consumer_name, event_id)`. El relé confirma el enqueue en PostgreSQL sólo después de que BullMQ acepta el job. Que Redis pierda sus datos no marca ningún evento como procesado: al arrancar, worker y scheduler recorren PostgreSQL por páginas y recrean jobs con nuevos IDs recuperables.
-
-Un consumidor de efecto de base de datos aplica el cambio y marca el recibo `completed` en una transacción. Si el proceso cae antes del ACK de BullMQ, el replay ve el recibo y no repite el efecto. Un tipo aún no implementado no tiene handler: falla visiblemente en BullMQ y puede recuperarse cuando V05/V06/V07 registre su consumidor real.
-
-ObjectStorage usa claves `users/<uuid>/blobs/<uuid>`. La lectura comprueba dueño, namespace, tamaño y SHA-256 contra el blob de PostgreSQL. Escrituras concurrentes se serializan por blob con advisory lock; una violación determinista de DB limpia el objeto recién creado, y una pérdida de conexión deja un huérfano explícito para limpieza posterior antes que arriesgar borrar bytes que pudieran haberse confirmado.
-
-Para operar el dispatcher y worker, con PostgreSQL y Redis ya levantados, ejecute en terminales distintas:
-
-```bash
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
-REDIS_URL=redis://127.0.0.1:6391 \
-  pnpm --filter @crashmemory/scheduler dev
-
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
-REDIS_URL=redis://127.0.0.1:6391 \
-  pnpm --filter @crashmemory/worker dev
-```
-
-Ambos emiten JSON sin payloads: `outbox.dispatch.enqueued`, `outbox.dispatch.failed`, `consumer.completed`, `consumer.skipped` y `consumer.unregistered` están en el campo `metrics`; fallas de worker o scheduler incluyen sólo el componente y código. El scheduler despacha cada `OUTBOX_DISPATCH_INTERVAL_MS` (predeterminado `5000`, mínimo `250`), y ambos cierran conexiones limpiamente ante `SIGINT` o `SIGTERM`.
-
-Para revisar un job fallido o forzar un replay no borre filas de PostgreSQL: corrija primero el consumidor/configuración y reinicie worker o scheduler. El arranque ejecuta recovery desde outbox. `outbox_events.last_error_code`, `outbox_dispatch_attempts` y `event_consumer_receipts` guardan el diagnóstico y estado durables; Redis puede limpiarse y el scheduler reconstruirá los jobs.
-
-La prueba V03 validada en este worktree usa servicios propios `crashmemory-v03`:
-
-```bash
-COMPOSE_PROJECT_NAME=crashmemory-v03 POSTGRES_PORT=54331 POSTGRES_DB=crashmemory_v03 \
-REDIS_PORT=6391 MINIO_PORT=9013 MINIO_CONSOLE_PORT=9014 \
-  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d --wait
-
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
-TEST_REDIS_URL=redis://127.0.0.1:6391 \
-TEST_OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9013 \
-TEST_OBJECT_STORAGE_BUCKET=crashmemory-v03-test \
-TEST_OBJECT_STORAGE_ACCESS_KEY=crashmemory \
-TEST_OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
-  pnpm --filter @crashmemory/runtime test
-```
-
-Las nueve pruebas cubren commit→fallo de enqueue→replay, flush de Redis→recovery, caída entre efecto DB/ACK sin duplicar, dos workers, cursor con microsegundos, evento canónico rehidratado desde PostgreSQL, namespace/hash/bytes y MinIO real.
-
-## Extracción V05, privacidad y coste
-
-`@crashmemory/extraction` consume la [entrada persistida de extracción](docs/contracts/extraction-input-v1.md): cuerpo normalizado y adjuntos del mismo usuario y revisión. Sólo considera PDF con texto; PDF.js conserva páginas y Unicode bajo límites de 10 MB, 100 páginas y 250 000 caracteres. Un PDF escaneado, cifrado o no compatible devuelve `pdf_requires_manual_review`; V05 no ofrece OCR ni crea una obligación a partir de ese resultado.
-
-Cada candidato requiere título, importe positivo con moneda ISO, vencimiento y offsets UTF-16. Esos offsets se verifican de nuevo contra el texto y SHA-256 exactos antes de generar evidencia. Un `$` sin moneda, JSON inválido, evidencia fuera de rango o ambigüedad pasa a revisión manual. El correo/PDF se delimita como dato no confiable: sus instrucciones no alteran el prompt ni se aceptan como evidencia.
-
-Los nuevos jobs usan `EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only` si no se configura otro valor. `local-only` nunca crea una solicitud HTTP, incluso si falla o falta el adaptador local. Para crear jobs `remote-allowed`, configure explícitamente `EXTRACTION_DEFAULT_PRIVACY_PROFILE=remote-allowed` además de `MODEL_REMOTE_ENABLED=true`, `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true` y una clave en un `.env` ignorado. La confirmación registra que el proyecto API no tiene opt-in de compartición o entrenamiento. El adaptador sólo acepta OpenAI Responses con `gpt-5.6-terra`, esfuerzo `medium`, `store:false`, una llamada foreground y sin fallback ni reintentos ocultos. `store:false` no implica Zero Data Retention: CrashMemory no afirma ZDR; los controles de retención/monitoreo de abuso se administran aparte conforme al [ADR 0002](docs/adr/0002-remote-model-privacy.md).
-
-`DurableExtractionRunner` reclama un `extraction_job`, carga sólo la revisión autorizada, ejecuta el modelo fuera de transacciones y, al terminar, persiste páginas PDF, evidencia y candidatos junto con el evento `obligation.candidate.created.v1`. El worker serializa ticks, recupera periódicamente leases de tres minutos y drena el tick activo antes de cerrar. V06 consume esos candidatos; no se confirma ninguna obligación en V05.
-
-Para verificar la instalación combinada, arranque un proyecto Compose aislado y aplique las migraciones. En este host se ejecutaron los siguientes comandos con el contexto `colima-crashmemory`:
-
-```bash
-COMPOSE_PROJECT_NAME=crashmemory-i001-v05 POSTGRES_PORT=54339 POSTGRES_DB=crashmemory_i001_v05 \
-REDIS_PORT=6399 MINIO_PORT=9019 MINIO_CONSOLE_PORT=9020 \
-  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d --wait
-
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
-  pnpm db:migrate
-```
-
-El siguiente arranque del worker, con los mismos servicios, se comprobó sin credenciales externas:
-
-```bash
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
-REDIS_URL=redis://127.0.0.1:6399 \
-OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9019 \
-OBJECT_STORAGE_BUCKET=crashmemory-i001-v05 \
-OBJECT_STORAGE_ACCESS_KEY=crashmemory \
-OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
-EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only \
-  pnpm --filter @crashmemory/worker dev
-```
-
-En esta configuración no hay adaptador local de producción: los jobs que requieren modelo quedan para revisión manual sin salida HTTP. Las pruebas del paquete worker usan adaptadores simulados y verifican dueño/revisión, PDF, evidencia, candidato, outbox, recovery y que el perfil predeterminado no llama al proveedor remoto:
-
-```bash
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
-  pnpm --filter @crashmemory/worker test
-```
-
-Antes de cada petición remota, `ModelBudgetRepository.reserve` bloquea el presupuesto USD y reserva el máximo del JSON completo enviado (instrucciones, documento y esquema), limitado por `MODEL_MAX_INPUT_TOKENS` y `MODEL_MAX_OUTPUT_TOKENS`. Las tarifas por millón son versionadas y configurables. La respuesta con uso queda `estimated`; sin uso se conserva la estimación conservadora. Un timeout o fallo de transporte queda `unknown` y mantiene su reserva, nunca se muestra como coste cero. El ledger guarda sólo proveedor, modelo, versión, unidades y coste; no guarda correo, PDF, prompt, respuesta ni credencial.
-
-El presupuesto se configura por CLI local, sin endpoint HTTP ni llamada a proveedor. Cree o identifique primero un usuario sintético local con `pnpm db:seed` y copie el UUID que informa. Use instantes UTC exactos con formato `YYYY-MM-DDTHH:mm:ssZ` y ajuste el período para que contenga la fecha de ejecución: fuera del período no habrá límite activo y la reserva remota queda bloqueada. Reemplace el UUID y la URL por los de su base antes de ejecutar:
-
-```bash
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
-  pnpm --filter @crashmemory/db budget:set -- \
-  --user-id '00000000-0000-4000-8000-000000000001' \
-  --limit-usd '25.00' \
-  --period-start '2026-09-01T00:00:00Z' \
-  --period-end '2026-10-01T00:00:00Z'
-
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
-  pnpm --filter @crashmemory/db budget:ledger -- \
-  --user-id '00000000-0000-4000-8000-000000000001' --limit 25
-```
-
-El primer comando valida decimales exactos e instantes UTC reales, imprime el límite creado sin credenciales ni contenido de correo y rechaza intervalos solapados para el mismo usuario. El segundo devuelve sólo proveedor, modelo, versión de precio, estado, unidades, coste, secuencia y fecha; no devuelve prompts, documentos, respuestas ni secretos. Un período sin límite aplicable, o una base heredada con más de un período aplicable, bloquea la reserva.
-
-## Avisos Telegram V07
-
-El enlace del bot requiere `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` y el mismo keyring de credenciales que usa la aplicación. Añada los valores reales solamente a `.env` ignorado; no use un token de bot ni un chat real en pruebas. El worker lee `getUpdates` cada `TELEGRAM_POLL_INTERVAL_MS` (10 segundos por defecto). Cuando un usuario autenticado hace `POST /api/v1/telegram/link` con `Content-Type: application/json` y su cabecera `X-CSRF-Token`, recibe una vez el comando `/start <código>`. El código dura diez minutos, se guarda sólo como hash y el chat que responde se cifra antes de persistirse. El cursor de sondeo avanza únicamente después de registrar la actualización; el contenido de los mensajes no se conserva.
-
-Los avisos automáticos están apagados inicialmente: la calidad de las inferencias aún no está medida. Sólo después de aprobar esa política se configura `NOTIFICATIONS_AUTOMATIC_ENABLED=true` tanto en worker como en scheduler. Con esa opción, una obligación `confirmed` con vencimiento genera los avisos `one_day` (24 horas antes) y `due`; el scheduler convierte los recordatorios vencidos en eventos de outbox. Una actualización, pago, descarte o borrado publica `obligation.reminder.reschedule.requested.v1` y cancela los recordatorios que sigan pendientes.
-
-La web mínima puede consultar las APIs autenticadas `GET /api/v1/telegram/status`, `GET /api/v1/reminders?limit=25&cursor=…` y `GET /api/v1/reminders/:reminderId/attempts?limit=25&cursor=…`. El límite está acotado a 100 y el cursor es opaco. Las respuestas sólo contienen estados, fechas e identificadores propios; nunca exponen chat ID, código de vínculo, ciphertext, mensaje del proveedor ni detalle de error.
-
-Antes de `sendMessage`, V07 inserta un intento append-only en `notification_delivery_attempts` y cierra toda transacción de dominio. Sólo entonces llama a Telegram y persiste una resolución append-only: `sent`, `failed` o `unknown`. Si un proceso cae después de preparar el intento, el siguiente procesamiento lo deja `unknown` sin enviar otra vez. Los `unknown` requieren revisión operativa; no hay reintento automático ni endpoint de reenvío. Las tablas anteriores de V02 siguen inmutables.
-
-La verificación sintética, sin tráfico a Telegram, usa una respuesta HTTP simulada y la base local V04 después de aplicar todas las migraciones con `pnpm db:migrate`:
-
-```bash
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
-  pnpm --filter @crashmemory/notifications test
-```
-
-Comprueba el vínculo de un solo uso, el cursor durable, intento → `sendMessage` simulado → `sent`, deduplicación de un envío confirmado y el paso de un intento interrumpido a `unknown` sin nueva llamada HTTP.
-
-Para verificar Gmail y avisos juntos, se ejecutó `pnpm check` seguido de `pnpm build` con PostgreSQL, Redis y MinIO del mismo proyecto Compose aislado. En este host se usaron `crashmemory-i001-merge`, base `crashmemory_i001` y puertos `54339`, `6399`, `9019` y `9020`; `TEST_DATABASE_URL`, `TEST_REDIS_URL` y `TEST_OBJECT_STORAGE_*` apuntaron a esos servicios. No hubo pruebas omitidas. La tabla `schema_migrations` contenía `0004_v04_gmail_sync` y `0006_v07_telegram_reminders`; una ejecución posterior de `pnpm db:migrate` respondió `Database is up to date`.
-
-## Límites actuales
-
-V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08 ofrece la web mínima y V10 validará el recorrido completo. V09 añade borrado y barreras contra resurrección.
-
-El worker de V05 está integrado, pero el perfil `local-only` aún no dispone de adaptador local de producción. Las pruebas de extremo a extremo usan proveedores simulados; no se ha validado el envío de datos reales a un modelo remoto.
-
-Tampoco hay registro público ni recuperación de contraseña. ObjectStorage persiste originales autorizados; el borrado y la exportación corresponden a V09. La entrega HTTP externa no ofrece garantía exactly-once.
-
-La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.md) fija para V05 `gpt-5.6-terra` configurable con esfuerzo `medium`, `store: false`, confirmación explícita del proyecto y bloqueo total de red para `local-only`. Distingue la política de no entrenamiento de la retención de monitoreo de abuso y no presume ZDR.
-
-## Estado
-
-| Hito | Resultado                                                 | Estado                                                                            |
-| ---- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| V01  | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.                             |
-| V02  | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).                                           |
-| V03  | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                                           |
-| V04  | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                                           |
-| V05  | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
-| V06  | Reconciliación                                            | Integrada en `origin/main` (`3075b6e`).                                           |
-| V07  | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
-| V08  | Web mínima                                                | Integrada en `origin/main` (`bbc28e5`); CI de producto `35756161282` `SUCCESS`.   |
-| V09  | Ciclo de vida, exportación y restore offline              | Integrada en `origin/main` (`7bac256`); CI `35758867730` `SUCCESS`.               |
-| V10  | Validación del MVP 1                                      | Pendiente.                                                                        |
-
-## Ciclo de vida V09
-
-Las mutaciones de ciclo de vida son rutas autenticadas de propietario, con `Origin` confiable, `Content-Type: application/json` y `X-CSRF-Token`. Requieren además `LIFECYCLE_JOURNAL_PATH` y una clave aleatoria de 32 bytes en `LIFECYCLE_JOURNAL_KEY_BASE64`; sin ese journal cifrado la API responde `503` antes de cambiar PostgreSQL. Cada intención se añade y sincroniza al journal antes de confirmar la transacción. El journal se conserva fuera de los dumps de PostgreSQL y se debe aplicar de forma conservadora antes de arrancar workers tras una restauración.
-
-`POST /api/v1/lifecycle/gmail/disconnect` recibe `{ "connectionId": "…" }`: elimina la credencial local, detiene la sincronización e invalida callbacks OAuth ya emitidos. La respuesta `remoteRevocation` distingue `revoked`, `failed` y `not_configured`; el estado local queda desconectado aun si Google no confirmó la revocación. `POST /api/v1/lifecycle/telegram/unlink` revoca el receptor y cancela avisos pendientes. `DELETE /api/v1/lifecycle/sources/:connectionId`, `DELETE /api/v1/lifecycle/sources/:connectionId/items/:externalMessageId`, `DELETE /api/v1/lifecycle/obligations/:obligationId` y `DELETE /api/v1/lifecycle/account` borran respectivamente fuente, mensaje, conocimiento generado o cuenta. El borrado de conocimiento conserva correos y otras obligaciones que comparten soporte; su barrera impide que un candidato tardío lo recree. Los originales sin referencias se eliminan de MinIO después del commit. Si la respuesta informa `pendingObjectCleanup > 0`, ejecute el reintento documentado abajo; este funciona incluso tras borrar la cuenta.
-
-`GET /api/v1/lifecycle/export?includeOriginals=false` produce una exportación propia con conexiones, obligaciones y evidencia. Los originales se excluyen por defecto. Con `includeOriginals=true` se codifican en base64 y cada uno está limitado a 10 MiB; los bytes preservados pueden ser una representación JSON normalizada cuando Gmail no entregó RFC822 raw, por lo que no se etiquetan como archivos `.eml` portables.
-
-Los avisos automáticos deshabilitados no se recuperan implícitamente al cambiar la variable. Ni siquiera un evento de entrega ya encolado envía a Telegram mientras la política del worker está apagada. Tras habilitar la política y revisar su calidad, el operador puede ejecutar `NOTIFICATIONS_AUTOMATIC_ENABLED=true DATABASE_URL=… pnpm --filter @crashmemory/notifications reminders:backfill`; sólo programa tiempos futuros, usa las claves de deduplicación existentes y no envía un lote histórico inmediatamente. Las obligaciones vencidas se excluyen de la página de backfill para que más de 100 registros viejos no oculten las futuras.
-
-Para una copia consistente, detenga API, worker y scheduler y espere su apagado completo antes de ejecutar el comando. El scheduler drena el tick Gmail y el worker drena el poll Telegram. `LIFECYCLE_QUIESCED=true` es una declaración del operador: el comando no detiene procesos por sí solo. Mantenga el journal cifrado **actual**, sus claves y el archivo cifrado fuera de Git y de los volúmenes que se restaurarán. El archivo contiene el esquema y datos completos de PostgreSQL (excepto los datos de `lifecycle_tombstones` y `lifecycle_object_cleanup`) y todos los originales catalogados de MinIO. La identidad y el prefijo del journal que existían al crear la copia quedan autenticados dentro del archivo; el restore exige el journal actual que extiende ese prefijo y lo valida entero antes de tocar el destino.
-
-Configure `DATABASE_URL`, `OBJECT_STORAGE_ENDPOINT`, `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_ACCESS_KEY`, `OBJECT_STORAGE_SECRET_KEY`, `LIFECYCLE_JOURNAL_PATH`, `LIFECYCLE_JOURNAL_KEY_BASE64` y `LIFECYCLE_BACKUP_KEY_BASE64` desde un archivo de entorno protegido fuera del repositorio. Ambas claves son base64 de 32 bytes y pueden ser distintas. El journal usa el directorio de bloqueo `LIFECYCLE_JOURNAL_PATH.lock` para serializar escrituras entre procesos; si un crash lo deja atrás, compruebe que no haya ningún escritor activo antes de quitar ese directorio y reintentar. En un host con binarios `pg_dump`/`pg_restore` instalados, ejecute directamente:
-
-```bash
-LIFECYCLE_QUIESCED=true LIFECYCLE_BACKUP_OUTPUT=/secure/backup.enc \
-  pnpm --filter @crashmemory/lifecycle backup
-```
-
-En este host se verificó PostgreSQL 17 dentro de Docker, sin binarios nativos: añada `LIFECYCLE_PG_CONTAINER=crashmemory-v09-recovery-postgres-1` y `LIFECYCLE_DOCKER_CONTEXT=colima-crashmemory` a ambos comandos. El contenedor indicado debe alojar la base del `DATABASE_URL`; el adaptador usa su puerto interno `5432` y transmite el dump por entrada/salida estándar, sin escribir rutas del host dentro del contenedor.
-
-Restaure **sin arrancar API, worker ni scheduler**. Cree una base PostgreSQL sin esquema y un bucket existente vacío distinto; el comando rechaza tablas, secuencias u objetos ya existentes. Apunte `DATABASE_URL` y `OBJECT_STORAGE_BUCKET` a esos destinos, conserve el archivo cifrado y el journal actual externo, y ejecute:
-
-```bash
-LIFECYCLE_QUIESCED=true LIFECYCLE_BACKUP_INPUT=/secure/backup.enc \
-  pnpm --filter @crashmemory/lifecycle restore
-```
-
-`pg_restore` aplica esquema, datos y restricciones en una sola transacción y falla ante errores; luego se restauran originales y se reaplican todas las barreras del journal, incluso las de mensajes o cuentas ausentes del snapshot. Si cualquier etapa falla, descarte la base y bucket de destino y repita sobre destinos vacíos; no arranque procesos antes de un resultado `restore_completed`. El journal actual es irremplazable para garantizar borrados posteriores a la copia. El archivo se construye en memoria y su tamaño práctico depende de la RAM disponible; la QA real usó fixtures pequeños, no un volumen de producción.
-
-Si MinIO falla durante un borrado, las claves quedan en `lifecycle_object_cleanup` sin dependencia del usuario eliminado. Cuando MinIO vuelva, con `DATABASE_URL` y las variables `OBJECT_STORAGE_*` configuradas ejecute:
-
-```bash
-LIFECYCLE_CLEANUP_LIMIT=100 pnpm --filter @crashmemory/lifecycle cleanup:retry
-```
-
-La salida `object_cleanup_retried` informa `removed`, `pending` y `skippedLive`. El comando sólo quita la intención después de confirmar la eliminación del objeto; nunca elimina un blob que todavía aparece en el catálogo. Repítalo hasta que `pending` sea cero o investigue las claves `skippedLive`/fallidas. Gmail renueva el watch durante las 48 horas previas a su expiración al ejecutar el tick configurado; las solicitudes del adaptador Gmail y la renovación del token tienen timeout de 30 segundos para permitir drenaje acotado.
-
-## Gmail V04
-
-Registre en Google Cloud una URI de redirección exacta que termine en `/api/v1/gmail/callback`. Configure únicamente el scope `https://www.googleapis.com/auth/gmail.readonly`; este proyecto no solicita `modify` ni `mail.google.com`. Mantenga el cliente OAuth, el keyring de credenciales y la clave de estado fuera de Git:
-
-```dotenv
-GMAIL_CLIENT_ID=outside-git
-GMAIL_CLIENT_SECRET=outside-git
-GMAIL_REDIRECT_URI=http://127.0.0.1:4314/api/v1/gmail/callback
-CREDENTIAL_ACTIVE_KEY_VERSION=v1
-CREDENTIAL_ENCRYPTION_KEYS_JSON={"v1":"base64-32-byte-key"}
-OAUTH_STATE_SECRET_BASE64=base64-32-byte-key
-GOOGLE_PUBSUB_AUDIENCE=expected-push-oidc-audience
-GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL=pubsub-push@project.iam.gserviceaccount.com
-GMAIL_PUBSUB_TOPIC=projects/project/topics/crashmemory-gmail
+GOOGLE_PUBSUB_AUDIENCE=https://app.example.test/webhooks/google/gmail
+GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL=pubsub-push@example-project.iam.gserviceaccount.com
+GMAIL_PUBSUB_TOPIC=projects/example-project/topics/crashmemory-gmail
 GMAIL_SYNC_ENABLED=true
 ```
 
-Con una sesión local ya iniciada, `POST /api/v1/gmail/connect` exige `Origin`, `Content-Type: application/json` y `X-CSRF-Token`; devuelve una URL de consentimiento de Google con `prompt=consent` para obtener un refresh token también al reconectar. El callback exige además la misma cookie de sesión activa que emitió el estado firmado, antes de consumir su nonce. Las credenciales se cifran vinculadas a usuario y conexión. Un `invalid_grant`, la expiración de un refresh token de una app en modo testing o una revocación dejan la conexión en error y requieren volver a autorizarla.
+Conceda a `gmail-api-push@system.gserviceaccount.com` el rol de publicador sobre el topic. Configure una suscripción push HTTPS a `/webhooks/google/gmail` con autenticación OIDC, la cuenta de servicio indicada y la misma audiencia de `GOOGLE_PUBSUB_AUDIENCE`. `next.config.ts` sólo reescribe `/api`: el proxy o túnel HTTPS debe dirigir `/webhooks/google/gmail` directamente al puerto de la API. El endpoint valida emisor, audiencia y correo verificado de la cuenta; una notificación sólo despierta el catch-up y no adelanta el cursor.
 
-El conector limita el bootstrap a 200 mensajes. Captura el `historyId` antes del histórico y hace catch-up después; cada página persiste revisiones, cuerpo normalizado UTF-8, adjuntos y el evento `source.item.revision.created.v1` en una transacción antes de confirmar el cursor. Replays y notificaciones reordenadas son seguros. Un HTTP 404 de `history.list` marca un resync explícito y nunca expande la ventana autorizada en silencio. El watch se renueva durante las 48 horas previas a su expiración; el polling incremental desde el cursor confirmado queda como respaldo para avisos perdidos.
+El bootstrap conserva como máximo 200 mensajes. Gmail se materializa en lotes de cuatro mensajes, cada lote se persiste antes de cargar el siguiente y el cursor se confirma únicamente al terminar todas las páginas. Los mensajes borrados durante la lectura se omiten; otros fallos dejan el cursor anterior para replay idempotente. El scheduler hace polling de respaldo, recupera historial vencido con resync acotado y renueva el watch dentro de las 48 horas previas a expirar. Las solicitudes Gmail y el refresh tienen timeout de 30 segundos.
 
-El webhook `POST /webhooks/google/gmail` acepta una notificación Pub/Sub sólo con OIDC cuyo `aud` coincide con `GOOGLE_PUBSUB_AUDIENCE`, cuyo emisor es Google y cuyo correo verificado coincide con `GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL`. Persiste la señal `historyId` como disparador durable y no mueve `sync_cursors`; únicamente el catch-up que ya guardó todas sus páginas puede hacerlo. Configure en Pub/Sub la misma audiencia y la URL pública HTTPS del webhook. El cuerpo de un correo, adjuntos y tokens no se registran en logs.
+## Modelo, presupuesto y revisión
 
-El scheduler ejecuta el conector real cuando `GMAIL_SYNC_ENABLED=true`: descifra el refresh token, obtiene un access token, consume wakeups, hace polling incremental de respaldo, recupera un `historyId` vencido con resync limitado y renueva watch durante las 48 horas previas a su expiración. `GMAIL_SYNC_INTERVAL_MS` predetermina cinco minutos. Si Google devuelve `invalid_grant`, conserva el wakeup y deja la conexión en `error` para que el usuario la vuelva a autorizar.
-
-La verificación V04 se ejecutó con PostgreSQL aislado en `54332`:
+Una clave de proveedor por sí sola no habilita tráfico remoto. Antes de `remote-allowed`, cree un límite para el UUID del usuario y un período UTC vigente:
 
 ```bash
-COMPOSE_PROJECT_NAME=crashmemory-v04 POSTGRES_PORT=54332 POSTGRES_DB=crashmemory_v04 \
-REDIS_PORT=6392 MINIO_PORT=9015 MINIO_CONSOLE_PORT=9016 \
-  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d postgres --wait
+node scripts/run-local.mjs --filter @crashmemory/db budget:set -- \
+  --user-id '<uuid-local>' --limit-usd '<decimal>' \
+  --period-start '<YYYY-MM-DDTHH:mm:ssZ>' \
+  --period-end '<YYYY-MM-DDTHH:mm:ssZ>'
 
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
-  pnpm --filter @crashmemory/db test
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
-  pnpm --filter @crashmemory/api test
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
-  pnpm --filter @crashmemory/gmail test
+node scripts/run-local.mjs --filter @crashmemory/db budget:ledger -- \
+  --user-id '<uuid-local>' --limit 25
 ```
+
+La reserva usa el máximo de entrada/salida configurado y serializa llamadas concurrentes. Una respuesta con uso se registra como estimada; si falta uso se conserva la estimación conservadora. Un timeout deja costo `unknown` y mantiene la reserva, nunca costo cero. El ledger no guarda correo, PDF, prompt, respuesta ni credencial.
+
+PDF con texto conserva página y fragmento. Un PDF escaneado, protegido, ambiguo o mayor que el límite queda en revisión manual; OCR y carga manual de documentos están fuera del MVP.
+
+## Telegram y avisos
+
+Configure `TELEGRAM_BOT_TOKEN` y el mismo keyring. La web genera `/start <código>` de un solo uso y diez minutos; el chat se cifra y el texto entrante no se conserva.
+
+Mantenga `NOTIFICATIONS_AUTOMATIC_ENABLED=false` hasta medir y aprobar la calidad. Para habilitarla, cambie la variable tanto para worker como scheduler y programe obligaciones confirmadas futuras de forma explícita:
+
+```bash
+node scripts/run-local.mjs --filter @crashmemory/notifications reminders:backfill
+```
+
+El backfill no programa vencimientos históricos y usa claves de deduplicación. Antes de llamar a Telegram se persiste el intento. Un timeout después de preparar queda `unknown` y nunca se reenvía a ciegas; requiere revisión operativa. Pago, descarte, actualización y borrado cancelan recordatorios obsoletos.
+
+## Exportación, borrado y recuperación
+
+Las rutas de ciclo de vida requieren cookie de sesión, `Origin` confiable, `Content-Type: application/json`, `X-CSRF-Token` y un journal cifrado actual en `LIFECYCLE_JOURNAL_PATH`, fuera del checkout y de los backups. La desconexión Gmail borra la credencial local aun si la revocación remota responde `failed` o `not_configured`. El borrado registra primero la intención; las barreras impiden que un replay o restore anterior resucite lo borrado.
+
+| Operación                        | Ruta                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| Cuenta completa                  | `DELETE /api/v1/lifecycle/account`                                        |
+| Fuente Gmail                     | `DELETE /api/v1/lifecycle/sources/:connectionId`                          |
+| Mensaje de una fuente            | `DELETE /api/v1/lifecycle/sources/:connectionId/items/:externalMessageId` |
+| Obligación conservando el correo | `DELETE /api/v1/lifecycle/obligations/:obligationId`                      |
+
+`GET /api/v1/lifecycle/export?includeOriginals=false` exporta metadatos propios; habilitar originales los incluye en base64 hasta 10 MiB cada uno. Si un crash deja `LIFECYCLE_JOURNAL_PATH.lock`, confirme primero que API, worker, scheduler y cualquier CLI estén detenidos; sólo entonces retire ese directorio y reintente. Nunca elimine el lock mientras exista un escritor.
+
+Para backup, detenga API, worker y scheduler y espere que terminen su drenaje. Conserve fuera de Git el journal actual, sus claves y el archivo cifrado:
+
+```bash
+LIFECYCLE_QUIESCED=true LIFECYCLE_BACKUP_OUTPUT=/secure/crashmemory.enc \
+  node scripts/run-local.mjs --filter @crashmemory/lifecycle backup
+```
+
+Sin binarios nativos, configure `LIFECYCLE_PG_CONTAINER` con el contenedor PostgreSQL que aloja `DATABASE_URL` y `LIFECYCLE_DOCKER_CONTEXT`. El adaptador transmite el dump por entrada/salida estándar.
+
+Restaure antes de arrancar cualquier proceso, sobre una base sin esquema y un bucket existente vacío, con el journal actual que extiende el prefijo autenticado del backup:
+
+```bash
+LIFECYCLE_QUIESCED=true LIFECYCLE_BACKUP_INPUT=/secure/crashmemory.enc \
+  node scripts/run-local.mjs --filter @crashmemory/lifecycle restore
+```
+
+El restore valida archivo y journal completos antes de mutar, usa `pg_restore --single-transaction --exit-on-error`, restaura objetos y reaplica tombstones. No desactiva claves foráneas ni triggers. El archivo cifrado se construye en memoria: reserve RAM y disco acordes al dump y los originales; la validación usó un volumen pequeño. Si falla una etapa, descarte base y bucket de destino y repita sobre destinos vacíos. Para reintentar objetos pendientes tras recuperar MinIO:
+
+```bash
+LIFECYCLE_CLEANUP_LIMIT=100 \
+  node scripts/run-local.mjs --filter @crashmemory/lifecycle cleanup:retry
+```
+
+V09.1 probó PostgreSQL 17.6 y MinIO reales en destinos separados. La suite general omite el restore destructivo cuando faltan `TEST_RESTORE_DATABASE_URL`, `TEST_PG_CONTAINER` y buckets aislados; no debe ejecutarse concurrentemente contra la base normal de pruebas.
+
+## Verificación reproducible
+
+Use un namespace desechable con PostgreSQL, Redis y MinIO, cree su bucket y ejecute:
+
+```bash
+TEST_DATABASE_URL='<url-base-desechable>' \
+TEST_REDIS_URL='<url-redis-desechable>' \
+TEST_OBJECT_STORAGE_ENDPOINT='<url-minio-desechable>' \
+TEST_OBJECT_STORAGE_BUCKET='<bucket-desechable>' \
+TEST_OBJECT_STORAGE_ACCESS_KEY='<desde-entorno-protegido>' \
+TEST_OBJECT_STORAGE_SECRET_KEY='<desde-entorno-protegido>' \
+  pnpm check
+
+pnpm build
+```
+
+La aceptación sintética cubre originales y cuerpo/PDF, extracción fake validada, presupuesto, reconciliación y cambio de vencimiento, replay/concurrencia, campos protegidos y conflictos, evidencia por propietario, recordatorio y envío fake, resultado `unknown` sin reintento, pago/cancelación, borrado y barreras de restore. También comprueba que `local-only` no llama al adaptador remoto, que el presupuesto concurrente se respeta y que dos usuarios no comparten datos. Ninguna prueba contacta Gmail, Telegram u OpenAI reales.
+
+Para crear un recorrido visible en la web, use una base y bucket desechables ya migrados, con API, worker y scheduler detenidos para que no compitan por outbox o trabajos. Configure allí la cuenta de seed y ejecute una vez:
+
+```bash
+node scripts/run-local.mjs acceptance:seed
+```
+
+El fixture genera una referencia única por ejecución, usa PostgreSQL y MinIO reales con modelo/Telegram fake, deja la obligación, evidencia, conflicto resuelto e intentos visibles y devuelve sus IDs. No lo ejecute sobre datos reales ni sobre el destino normal de desarrollo.
+
+## Estado de aceptación MVP 1
+
+| Criterio              | Evidencia V10                                                                        | Estado             |
+| --------------------- | ------------------------------------------------------------------------------------ | ------------------ |
+| AC-01 reconstrucción  | lockfile, Compose, migración/seed, arranque conjunto y browser desde worktree limpio | Sintético validado |
+| AC-02 persistencia    | runtime durable y restore PostgreSQL/MinIO aislado de V09.1                          | Validado           |
+| AC-03 incremental     | cursor sólo tras todas las páginas/lotes; resync acotado                             | Validado           |
+| AC-04 idempotencia    | replays y consumidores concurrentes no duplican obligación                           | Validado           |
+| AC-05 evidencia       | cuerpo/PDF/página y autorización por propietario                                     | Validado           |
+| AC-06 actualización   | nueva fecha crea historial y cancela/reprograma avisos                               | Validado           |
+| AC-07 privacidad      | `local-only` registra cero llamadas remotas                                          | Validado           |
+| AC-08 portabilidad IA | fake y adaptador remoto intercambiables por perfil                                   | Sintético validado |
+| AC-09 secretos        | `.env` ignorado, redacción y scan de repo                                            | Validado           |
+| AC-10 avisos          | fake durable; `unknown` sin reenvío ciego                                            | Sintético validado |
+| AC-11 corrección      | campos protegidos producen conflicto visible                                         | Validado           |
+| AC-12 borrado         | cancelación, journal y replay/restore sin resurrección                               | Validado           |
+
+La validación con una cuenta Gmail real autorizada, un bot/chat Telegram real y el modelo remoto configurado sigue pendiente. No se ha medido precisión sobre correos reales, disponibilidad del modelo, volumen grande de backup ni entrega externa exactamente una vez.
+
+## Alcance
+
+El MVP termina en Gmail → obligación con evidencia → Telegram y web mínima. Chat conversacional, Calendar, WhatsApp, OCR, contratos como entidad, contabilidad, recurrencias, carga manual, embeddings, búsqueda semántica, grafo, MCP y despliegue cloud quedan para versiones posteriores.

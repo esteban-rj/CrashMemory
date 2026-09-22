@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/worker.ts",
+    "dev": "node --import tsx src/worker.ts",
+    "acceptance:seed": "node --import tsx src/acceptance-fixture.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --import tsx test/**/*.test.ts"

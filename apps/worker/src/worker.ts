@@ -178,6 +178,7 @@ async function main(): Promise<void> {
     await workerConnection.quit();
     await queueConnection.quit();
     await pool.end();
+    console.log(JSON.stringify({ component: "worker", event: "stopped" }));
   };
   worker.on("error", (error) => {
     console.error(
@@ -188,8 +189,8 @@ async function main(): Promise<void> {
       }),
     );
   });
-  process.once("SIGINT", () => void shutdown());
-  process.once("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
   const replayed = await relay.recoverFromPostgres();
   const dispatched = await relay.dispatchPending();
   await extractionLoop.start();
