@@ -468,8 +468,14 @@ test(
       await pool.query(
         `INSERT INTO outbox_events(
          id, user_id, event_type, aggregate_type, aggregate_id, idempotency_key, occurred_at, payload
-       ) VALUES ($1, $2, 'test.valid.v1', 'test', $3, $4, now(), '{}')`,
-        [validEventId, userA, randomUUID(), randomUUID()],
+       ) VALUES ($1, $2, 'source.item.revision.created.v1', 'source_item', $3, $4, now(), $5)`,
+        [
+          validEventId,
+          userA,
+          randomUUID(),
+          randomUUID(),
+          { sourceItemId: randomUUID(), sourceItemRevisionId: randomUUID() },
+        ],
       );
       await assert.rejects(
         pool.query(

@@ -1,14 +1,17 @@
 import Fastify, { type FastifyServerOptions } from "fastify";
 import type { Pool } from "pg";
 import { CONTRACT_VERSION, demoObligation } from "@crashmemory/contracts";
+import { TelegramLinkService } from "@crashmemory/notifications";
 import { registerAuthRoutes, type AuthConfig } from "./auth.ts";
 import { registerGmailRoutes, type GmailRouteConfig } from "./gmail.ts";
+import { registerTelegramRoutes } from "./telegram.ts";
 
 export function buildApp(
   options: {
     pool?: Pool;
     auth?: AuthConfig;
     gmail?: GmailRouteConfig;
+    telegramLinks?: TelegramLinkService;
     logger?: FastifyServerOptions["logger"];
   } = {},
 ) {
@@ -58,6 +61,12 @@ export function buildApp(
   if (options.pool && options.auth) {
     registerAuthRoutes(app, options.pool, options.auth);
     registerGmailRoutes(app, options.pool, options.auth, options.gmail);
+    registerTelegramRoutes(
+      app,
+      options.pool,
+      options.auth,
+      options.telegramLinks,
+    );
   } else {
     app.post("/api/v1/auth/login", async (request, reply) =>
       reply.code(503).send({

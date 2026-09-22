@@ -1,5 +1,6 @@
 import { createPool, DurableRuntimeRepository } from "@crashmemory/db";
 import { PostgresGmailSyncRunner } from "@crashmemory/gmail/runner";
+import { ReminderScheduler } from "@crashmemory/notifications";
 import { OutboxRelay, createOutboxQueue } from "@crashmemory/runtime";
 import { CredentialCipher } from "@crashmemory/security";
 
@@ -71,18 +72,25 @@ async function main(): Promise<void> {
   const gmail = gmailRunner(pool);
   const gmailInterval = gmail ? gmailSyncIntervalMs() : 0;
   let lastGmailRun = 0;
+  const reminders = new ReminderScheduler(
+    pool,
+    undefined,
+    process.env.NOTIFICATIONS_AUTOMATIC_ENABLED === "true",
+  );
   let stopping = false;
   let running = false;
   const tick = async (): Promise<void> => {
     if (running || stopping) return;
     running = true;
     try {
+      const scheduled = await reminders.enqueueDue();
       const dispatched = await relay.dispatchPending();
-      if (dispatched > 0) {
+      if (scheduled > 0 || dispatched > 0) {
         console.log(
           JSON.stringify({
             component: "scheduler",
             event: "dispatched",
+            scheduled,
             count: dispatched,
             metrics: relay.getMetrics(),
           }),

@@ -15,6 +15,8 @@
     "@crashmemory/extraction": "workspace:*",
     "@crashmemory/gmail": "workspace:*",
     "@crashmemory/model-gateway": "workspace:*",
-    "@crashmemory/runtime": "workspace:*"
+    "@crashmemory/notifications": "workspace:*",
+    "@crashmemory/runtime": "workspace:*",
+    "@crashmemory/security": "workspace:*"
   }
 }
