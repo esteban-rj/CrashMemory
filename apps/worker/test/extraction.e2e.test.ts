@@ -52,9 +52,20 @@ function syntheticPdf(pageTexts: string[]): Uint8Array {
   return Buffer.from(pdf, "ascii");
 }
 
-function gateway(value: unknown): ModelGateway {
+function gateway(
+  value: unknown,
+  remoteCalls?: { count: number },
+): ModelGateway {
   return new ModelGateway({
     local: new FakeStructuredModel({ value }),
+    remote: remoteCalls
+      ? {
+          run: async () => {
+            remoteCalls.count += 1;
+            return { value: { candidates: [] } };
+          },
+        }
+      : undefined,
     remoteConfig: loadRemoteModelConfig({}),
   });
 }
@@ -137,36 +148,41 @@ test(
       );
       assert.equal(await loader.load(otherUserId, revisionId), null);
       const amountStart = body.indexOf("COP");
+      const defaultRemote = { count: 0 };
       const runner = new DurableExtractionRunner(
         new ExtractionService(
-          gateway({
-            candidates: [
-              {
-                title: "Factura de agua",
-                amount: { amount: "48250.50", currency: "COP" },
-                due: {
-                  kind: "civil_date",
-                  date: "2026-10-15",
-                  timeZone: "America/Bogota",
-                },
-                evidence: [
-                  {
-                    source: "body",
-                    attachmentId: null,
-                    page: null,
-                    startOffset: amountStart,
-                    endOffset: body.length,
+          gateway(
+            {
+              candidates: [
+                {
+                  title: "Factura de agua",
+                  amount: { amount: "48250.50", currency: "COP" },
+                  due: {
+                    kind: "civil_date",
+                    date: "2026-10-15",
+                    timeZone: "America/Bogota",
                   },
-                ],
-                ambiguous: false,
-              },
-            ],
-          }),
+                  evidence: [
+                    {
+                      source: "body",
+                      attachmentId: null,
+                      page: null,
+                      startOffset: amountStart,
+                      endOffset: body.length,
+                    },
+                  ],
+                  ambiguous: false,
+                },
+              ],
+            },
+            defaultRemote,
+          ),
         ),
         extraction,
         loader,
       );
       assert.equal(await runner.runOne(), "completed");
+      assert.equal(defaultRemote.count, 0);
       assert.equal(
         (
           await pool.query(
