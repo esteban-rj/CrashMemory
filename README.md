@@ -1,6 +1,6 @@
 # CrashMemory — Gmail, extracción verificable y avisos Telegram
 
-CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 extrae candidatos verificables desde cuerpo y PDF de texto; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La reconciliación y la web mínima siguen pendientes. Gmail y Telegram se validan con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; la base integrada de V05 aporta extracción verificable desde cuerpo y PDF de texto, con su worker aún en corrección; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La reconciliación y la web mínima siguen pendientes. Gmail y Telegram se validan con servicios locales y proveedores simulados.
 
 ## Requisitos
 
@@ -219,22 +219,24 @@ Para verificar Gmail y avisos juntos, se ejecutó `pnpm check` seguido de `pnpm 
 
 V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08/V10 completarán el recorrido y V09 define borrado y barreras contra resurrección.
 
+V05 tiene su base integrada, pero el worker de extracción continúa en corrección; no se debe presentar el procesamiento automático Gmail → candidato como cerrado todavía.
+
 Tampoco hay registro público ni recuperación de contraseña. ObjectStorage persiste originales autorizados; el borrado y la exportación corresponden a V09. La entrega HTTP externa no ofrece garantía exactly-once.
 
 La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.md) fija para V05 `gpt-5.6-terra` configurable con esfuerzo `medium`, `store: false`, confirmación explícita del proyecto y bloqueo total de red para `local-only`. Distingue la política de no entrenamiento de la retención de monitoreo de abuso y no presume ZDR.
 
 ## Estado
 
-| Hito    | Resultado                                                 | Estado                                                |
-| ------- | --------------------------------------------------------- | ----------------------------------------------------- |
-| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
-| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
-| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
-| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).               |
-| V05     | ModelGateway, presupuesto y extracción verificable        | Integrada en `origin/main` (`55d9207`).               |
-| V06     | Reconciliación                                            | Pendiente.                                            |
-| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en esta entrega.                            |
-| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                            |
+| Hito    | Resultado                                                 | Estado                                                    |
+| ------- | --------------------------------------------------------- | --------------------------------------------------------- |
+| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.     |
+| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).                   |
+| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                   |
+| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                   |
+| V05     | Base ModelGateway, presupuesto y extracción verificable   | Base integrada (`55d9207`); cierre funcional en revisión. |
+| V06     | Reconciliación                                            | Pendiente.                                                |
+| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en esta entrega.                                |
+| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                                |
 
 ## Gmail V04
 
