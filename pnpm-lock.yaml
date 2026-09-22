@@ -109,6 +109,15 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/extraction':
+        specifier: workspace:*
+        version: link:../../packages/extraction
+      '@crashmemory/gmail':
+        specifier: workspace:*
+        version: link:../../packages/gmail
+      '@crashmemory/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
       '@crashmemory/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications
@@ -161,6 +170,9 @@ importers:
       '@crashmemory/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@crashmemory/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       pdfjs-dist:
         specifier: 5.4.624
         version: 5.4.624

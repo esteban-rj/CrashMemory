@@ -188,6 +188,53 @@ test("parses localized money and civil dates without assigning a bare dollar cur
     date: "2026-10-15",
     timeZone: "America/Bogota",
   });
+  assert.equal(parseCivilDate("vence 10/11/2026", "America/Bogota"), null);
+});
+
+test("accepts equivalent localized decimal evidence without floating point", async () => {
+  const service = new ExtractionService(
+    new ModelGateway({
+      local: new FakeStructuredModel({
+        value: {
+          candidates: [
+            {
+              title: "Factura",
+              amount: { amount: "48250.5", currency: "COP" },
+              due: {
+                kind: "civil_date",
+                date: "2026-10-15",
+                timeZone: "America/Bogota",
+              },
+              evidence: [
+                {
+                  source: "body",
+                  attachmentId: null,
+                  page: null,
+                  startOffset: amountStart,
+                  endOffset: body.length,
+                },
+              ],
+              ambiguous: false,
+            },
+          ],
+        },
+      }),
+      remoteConfig: loadRemoteModelConfig({}),
+    }),
+  );
+  const result = await service.extract({
+    profile: "local-only",
+    userId: "u",
+    operationKey: "decimal",
+    attemptNumber: 1,
+    document: {
+      sourceItemRevisionId: "r",
+      body: { text: body, contentSha256: sha256Text(body) },
+      pdfPages: [],
+      userTimeZone: "America/Bogota",
+    },
+  });
+  assert.equal(result.candidates.length, 1);
 });
 
 test("scanned or unsupported PDFs are reported for manual review instead of OCR", async () => {

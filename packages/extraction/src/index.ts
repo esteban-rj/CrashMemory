@@ -13,6 +13,11 @@ import {
 } from "@crashmemory/model-gateway";
 import { z } from "zod";
 import { ExtractionRepository } from "@crashmemory/db";
+import { SourceRepository, type Queryable } from "@crashmemory/db";
+import {
+  AuthorizedBlobStorage,
+  type ObjectStorage,
+} from "@crashmemory/runtime";
 
 export interface TextSource {
   text: string;
@@ -29,6 +34,10 @@ export interface ExtractionDocument {
   body: TextSource;
   pdfPages: PdfPageText[];
   userTimeZone: string;
+  reviewRequired?: Array<{
+    code: "pdf_requires_manual_review";
+    attachmentId: string;
+  }>;
 }
 
 const rawEvidenceSchema = z
@@ -126,7 +135,7 @@ const modelJsonSchema = {
                 additionalProperties: false,
                 required: ["kind", "date", "timeZone"],
                 properties: {
-                  kind: { const: "civil_date" },
+                  kind: { type: "string", enum: ["civil_date"] },
                   date: { type: "string" },
                   timeZone: { type: "string" },
                 },
@@ -136,7 +145,7 @@ const modelJsonSchema = {
                 additionalProperties: false,
                 required: ["kind", "at", "timeZone"],
                 properties: {
-                  kind: { const: "instant" },
+                  kind: { type: "string", enum: ["instant"] },
                   at: { type: "string" },
                   timeZone: { type: "string" },
                 },
@@ -260,7 +269,21 @@ function candidateFromRaw(
 
 function supportsMoney(text: string, money: Money): boolean {
   const parsed = parseLocalizedMoney(text);
-  return parsed?.currency === money.currency && parsed.amount === money.amount;
+  return (
+    parsed?.currency === money.currency &&
+    parsed !== null &&
+    canonicalDecimal(parsed.amount) === canonicalDecimal(money.amount)
+  );
+}
+
+/** Compares decimal strings exactly after removing insignificant zeroes. */
+function canonicalDecimal(value: string): string {
+  const [integer, fraction = ""] = value.split(".");
+  const normalizedInteger = integer.replace(/^0+(?=\d)/, "");
+  const normalizedFraction = fraction.replace(/0+$/, "");
+  return normalizedFraction
+    ? `${normalizedInteger}.${normalizedFraction}`
+    : normalizedInteger;
 }
 
 function supportsDue(text: string, due: DueValue): boolean {
@@ -288,7 +311,7 @@ export class ExtractionService {
       attemptNumber: input.attemptNumber,
       request: {
         instructions:
-          "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible.",
+          "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. Offsets are UTF-16 code units relative to exactly one body or PDF page source. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible.",
         document: sourceText(input.document),
         schemaName: "crashmemory_obligation_extraction",
         schema: modelJsonSchema,
@@ -330,20 +353,36 @@ export class DurableExtractionRunner {
         await this.repository.fail(job.id, job.userId, "input_unavailable");
         return "manual_review";
       }
+      if (document.reviewRequired?.length) {
+        await this.repository.fail(
+          job.id,
+          job.userId,
+          document.reviewRequired[0]!.code,
+        );
+        return "manual_review";
+      }
       const result = await this.service.extract({
         profile: job.privacyProfile,
         userId: job.userId,
         operationKey: job.id,
-        attemptNumber: 1,
+        attemptNumber: job.attemptNumber,
         document,
       });
-      if (result.candidates.length === 0 || result.reviewRequired.length > 0) {
+      if (result.reviewRequired.length > 0) {
         await this.repository.fail(
           job.id,
           job.userId,
           result.reviewRequired[0]?.code ?? "no_candidate",
         );
         return "manual_review";
+      }
+      if (result.candidates.length === 0) {
+        await this.repository.complete({
+          jobId: job.id,
+          userId: job.userId,
+          candidates: [],
+        });
+        return "completed";
       }
       await this.repository.complete({
         jobId: job.id,
@@ -365,6 +404,76 @@ export class DurableExtractionRunner {
       await this.repository.fail(job.id, job.userId, code);
       return "manual_review";
     }
+  }
+}
+
+/** Loads only owner-authorized persisted Gmail bytes and saves PDF text artifacts. */
+export class PostgresExtractionDocumentLoader {
+  private readonly blobs: AuthorizedBlobStorage;
+
+  constructor(
+    private readonly db: Queryable,
+    private readonly repository: ExtractionRepository,
+    storage: ObjectStorage,
+  ) {
+    this.blobs = new AuthorizedBlobStorage(storage, new SourceRepository(db));
+  }
+
+  async load(
+    userId: string,
+    sourceItemRevisionId: string,
+  ): Promise<ExtractionDocument | null> {
+    const sources = new SourceRepository(this.db);
+    const input = await sources.getExtractionInput(
+      userId,
+      sourceItemRevisionId,
+    );
+    if (!input) return null;
+    const bodyBytes = await this.blobs.read(userId, input.body.blobId);
+    if (!bodyBytes) return null;
+    const user = await this.db.query<{ time_zone: string }>(
+      "SELECT time_zone FROM users WHERE id = $1",
+      [userId],
+    );
+    if (user.rowCount !== 1) return null;
+    const pdfPages: PdfPageText[] = [];
+    const reviewRequired: NonNullable<ExtractionDocument["reviewRequired"]> =
+      [];
+    for (const attachment of input.attachments.filter(
+      (item) => item.mediaType === "application/pdf",
+    )) {
+      const bytes = await this.blobs.read(userId, attachment.blobId);
+      if (!bytes) continue;
+      const parsed = await parseTextPdf(bytes);
+      if (parsed.manualReview) {
+        reviewRequired.push({
+          code: "pdf_requires_manual_review",
+          attachmentId: attachment.id,
+        });
+      }
+      const pages = parsed.pages.map((text, index) => ({
+        attachmentId: attachment.id,
+        page: index + 1,
+        text,
+        contentSha256: sha256Text(text),
+      }));
+      await this.repository.savePdfPages({
+        userId,
+        sourceItemRevisionId,
+        pages,
+      });
+      pdfPages.push(...pages);
+    }
+    return {
+      sourceItemRevisionId,
+      body: {
+        text: Buffer.from(bodyBytes).toString("utf8"),
+        contentSha256: input.body.contentSha256,
+      },
+      pdfPages,
+      userTimeZone: user.rows[0]!.time_zone,
+      reviewRequired,
+    };
   }
 }
 
@@ -427,7 +536,11 @@ export function parseCivilDate(
   const date = iso
     ? `${iso[1]}-${iso[2]}-${iso[3]}`
     : slash
-      ? `${slash[3]}-${slash[2].padStart(2, "0")}-${slash[1].padStart(2, "0")}`
+      ? Number(slash[1]) <= 12 &&
+        Number(slash[2]) <= 12 &&
+        slash[1] !== slash[2]
+        ? undefined
+        : `${slash[3]}-${slash[2].padStart(2, "0")}-${slash[1].padStart(2, "0")}`
       : named && months[named[2].toLowerCase()]
         ? `${named[3]}-${months[named[2].toLowerCase()]}-${named[1].padStart(2, "0")}`
         : undefined;

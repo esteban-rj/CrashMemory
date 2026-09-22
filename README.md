@@ -1,6 +1,6 @@
 # CrashMemory — Gmail, extracción verificable y avisos Telegram
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; la base integrada de V05 aporta extracción verificable desde cuerpo y PDF de texto, con su worker aún en corrección; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La reconciliación y la web mínima siguen pendientes. Gmail y Telegram se validan con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La reconciliación y la web mínima siguen pendientes. El flujo se valida con servicios locales y proveedores simulados.
 
 ## Requisitos
 
@@ -174,13 +174,44 @@ Las nueve pruebas cubren commit→fallo de enqueue→replay, flush de Redis→re
 
 ## Extracción V05, privacidad y coste
 
-`@crashmemory/extraction` consume la [entrada persistida de extracción](docs/contracts/extraction-input-v1.md): cuerpo normalizado y adjuntos del mismo usuario y revisión. Sólo considera PDF con texto; `parseTextPdf` extrae streams simples por página. Un PDF escaneado, cifrado o no compatible devuelve `pdf_requires_manual_review`; V05 no ofrece OCR ni crea una obligación a partir de ese resultado.
+`@crashmemory/extraction` consume la [entrada persistida de extracción](docs/contracts/extraction-input-v1.md): cuerpo normalizado y adjuntos del mismo usuario y revisión. Sólo considera PDF con texto; PDF.js conserva páginas y Unicode bajo límites de 10 MB, 100 páginas y 250 000 caracteres. Un PDF escaneado, cifrado o no compatible devuelve `pdf_requires_manual_review`; V05 no ofrece OCR ni crea una obligación a partir de ese resultado.
 
 Cada candidato requiere título, importe positivo con moneda ISO, vencimiento y offsets UTF-16. Esos offsets se verifican de nuevo contra el texto y SHA-256 exactos antes de generar evidencia. Un `$` sin moneda, JSON inválido, evidencia fuera de rango o ambigüedad pasa a revisión manual. El correo/PDF se delimita como dato no confiable: sus instrucciones no alteran el prompt ni se aceptan como evidencia.
 
-`local-only` nunca crea una solicitud HTTP, incluso si falla su adaptador local. `remote-allowed` queda bloqueado hasta que un `.env` ignorado contenga `MODEL_REMOTE_ENABLED=true`, `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true` y una clave. La confirmación registra que el proyecto API no tiene opt-in de compartición o entrenamiento. El adaptador sólo acepta OpenAI Responses con `gpt-5.6-terra`, esfuerzo `medium`, `store:false`, una llamada foreground y sin fallback ni reintentos ocultos. `store:false` no implica Zero Data Retention: CrashMemory no afirma ZDR; los controles de retención/monitoreo de abuso se administran aparte conforme al [ADR 0002](docs/adr/0002-remote-model-privacy.md).
+Los nuevos jobs usan `EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only` si no se configura otro valor. `local-only` nunca crea una solicitud HTTP, incluso si falla o falta el adaptador local. Para crear jobs `remote-allowed`, configure explícitamente `EXTRACTION_DEFAULT_PRIVACY_PROFILE=remote-allowed` además de `MODEL_REMOTE_ENABLED=true`, `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true` y una clave en un `.env` ignorado. La confirmación registra que el proyecto API no tiene opt-in de compartición o entrenamiento. El adaptador sólo acepta OpenAI Responses con `gpt-5.6-terra`, esfuerzo `medium`, `store:false`, una llamada foreground y sin fallback ni reintentos ocultos. `store:false` no implica Zero Data Retention: CrashMemory no afirma ZDR; los controles de retención/monitoreo de abuso se administran aparte conforme al [ADR 0002](docs/adr/0002-remote-model-privacy.md).
 
-`DurableExtractionRunner` reclama un `extraction_job`, carga sólo la revisión autorizada, ejecuta el modelo fuera de transacciones y, al terminar, persiste páginas PDF, evidencia y candidatos junto con el evento `obligation.candidate.created.v1`. V06 consume esos candidatos; no se confirma ninguna obligación en V05.
+`DurableExtractionRunner` reclama un `extraction_job`, carga sólo la revisión autorizada, ejecuta el modelo fuera de transacciones y, al terminar, persiste páginas PDF, evidencia y candidatos junto con el evento `obligation.candidate.created.v1`. El worker serializa ticks, recupera periódicamente leases de tres minutos y drena el tick activo antes de cerrar. V06 consume esos candidatos; no se confirma ninguna obligación en V05.
+
+Para verificar la instalación combinada, arranque un proyecto Compose aislado y aplique las migraciones. En este host se ejecutaron los siguientes comandos con el contexto `colima-crashmemory`:
+
+```bash
+COMPOSE_PROJECT_NAME=crashmemory-i001-v05 POSTGRES_PORT=54339 POSTGRES_DB=crashmemory_i001_v05 \
+REDIS_PORT=6399 MINIO_PORT=9019 MINIO_CONSOLE_PORT=9020 \
+  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d --wait
+
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
+  pnpm db:migrate
+```
+
+El siguiente arranque del worker, con los mismos servicios, se comprobó sin credenciales externas:
+
+```bash
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
+REDIS_URL=redis://127.0.0.1:6399 \
+OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9019 \
+OBJECT_STORAGE_BUCKET=crashmemory-i001-v05 \
+OBJECT_STORAGE_ACCESS_KEY=crashmemory \
+OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
+EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only \
+  pnpm --filter @crashmemory/worker dev
+```
+
+En esta configuración no hay adaptador local de producción: los jobs que requieren modelo quedan para revisión manual sin salida HTTP. Las pruebas del paquete worker usan adaptadores simulados y verifican dueño/revisión, PDF, evidencia, candidato, outbox, recovery y que el perfil predeterminado no llama al proveedor remoto:
+
+```bash
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
+  pnpm --filter @crashmemory/worker test
+```
 
 Antes de cada petición remota, `ModelBudgetRepository.reserve` bloquea el presupuesto USD y reserva el máximo del JSON completo enviado (instrucciones, documento y esquema), limitado por `MODEL_MAX_INPUT_TOKENS` y `MODEL_MAX_OUTPUT_TOKENS`. Las tarifas por millón son versionadas y configurables. La respuesta con uso queda `estimated`; sin uso se conserva la estimación conservadora. Un timeout o fallo de transporte queda `unknown` y mantiene su reserva, nunca se muestra como coste cero. El ledger guarda sólo proveedor, modelo, versión, unidades y coste; no guarda correo, PDF, prompt, respuesta ni credencial.
 
@@ -219,7 +250,7 @@ Para verificar Gmail y avisos juntos, se ejecutó `pnpm check` seguido de `pnpm 
 
 V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08/V10 completarán el recorrido y V09 define borrado y barreras contra resurrección.
 
-V05 tiene su base integrada, pero el worker de extracción continúa en corrección; no se debe presentar el procesamiento automático Gmail → candidato como cerrado todavía.
+El worker de V05 está integrado, pero el perfil `local-only` aún no dispone de adaptador local de producción. Las pruebas de extremo a extremo usan proveedores simulados; no se ha validado el envío de datos reales a un modelo remoto.
 
 Tampoco hay registro público ni recuperación de contraseña. ObjectStorage persiste originales autorizados; el borrado y la exportación corresponden a V09. La entrega HTTP externa no ofrece garantía exactly-once.
 
@@ -227,16 +258,16 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 
 ## Estado
 
-| Hito    | Resultado                                                 | Estado                                                    |
-| ------- | --------------------------------------------------------- | --------------------------------------------------------- |
-| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.     |
-| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).                   |
-| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                   |
-| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                   |
-| V05     | Base ModelGateway, presupuesto y extracción verificable   | Base integrada (`55d9207`); cierre funcional en revisión. |
-| V06     | Reconciliación                                            | Pendiente.                                                |
-| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en esta entrega.                                |
-| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                                |
+| Hito    | Resultado                                                 | Estado                                                |
+| ------- | --------------------------------------------------------- | ----------------------------------------------------- |
+| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
+| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
+| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
+| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).               |
+| V05     | ModelGateway, presupuesto y worker de extracción          | Integrada en esta entrega; validación real pendiente. |
+| V06     | Reconciliación                                            | Pendiente.                                            |
+| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).               |
+| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                            |
 
 ## Gmail V04
 

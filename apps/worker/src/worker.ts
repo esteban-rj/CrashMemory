@@ -1,4 +1,19 @@
-import { createPool, DurableRuntimeRepository } from "@crashmemory/db";
+import {
+  createPool,
+  DurableRuntimeRepository,
+  ExtractionRepository,
+  ModelBudgetRepository,
+} from "@crashmemory/db";
+import {
+  DurableExtractionRunner,
+  ExtractionService,
+  PostgresExtractionDocumentLoader,
+} from "@crashmemory/extraction";
+import {
+  loadRemoteModelConfig,
+  ModelGateway,
+  OpenAiResponsesAdapter,
+} from "@crashmemory/model-gateway";
 import {
   NotificationDispatcher,
   ReminderScheduler,
@@ -12,10 +27,16 @@ import {
 import {
   ConsumerRegistry,
   OutboxRelay,
+  S3ObjectStorage,
   createOutboxQueue,
   startOutboxWorker,
 } from "@crashmemory/runtime";
 import { CredentialCipher, hashOpaqueToken } from "@crashmemory/security";
+import {
+  loadExtractionPrivacyProfile,
+  registerExtractionConsumer,
+} from "./extraction-consumer.ts";
+import { ExtractionLoop } from "./extraction-loop.ts";
 
 function required(name: "DATABASE_URL" | "REDIS_URL"): string {
   const value = process.env[name];
@@ -31,7 +52,28 @@ async function main(): Promise<void> {
     required("REDIS_URL"),
   );
   const runtime = new DurableRuntimeRepository(pool);
+  const extractionRepository = new ExtractionRepository(pool);
+  const storage = new S3ObjectStorage({
+    endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
+    bucket: process.env.OBJECT_STORAGE_BUCKET ?? "crashmemory",
+    accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY,
+    secretAccessKey: process.env.OBJECT_STORAGE_SECRET_KEY,
+  });
+  const modelConfig = loadRemoteModelConfig();
+  const runner = new DurableExtractionRunner(
+    new ExtractionService(
+      new ModelGateway({
+        remoteConfig: modelConfig,
+        remote: new OpenAiResponsesAdapter(modelConfig),
+        budget: new ModelBudgetRepository(pool),
+      }),
+    ),
+    extractionRepository,
+    new PostgresExtractionDocumentLoader(pool, extractionRepository, storage),
+  );
   const registry = new ConsumerRegistry(runtime);
+  registerExtractionConsumer(registry, loadExtractionPrivacyProfile());
+
   let linkPoller: TelegramLinkPollingRunner | undefined;
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const keyring = process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON;
@@ -60,10 +102,17 @@ async function main(): Promise<void> {
       new TelegramUpdateRecorder(pool, botKey, links),
     );
   }
+
   const relay = new OutboxRelay(runtime, queue);
   const { worker, connection: workerConnection } = startOutboxWorker({
     redisUrl: required("REDIS_URL"),
     registry,
+  });
+  const extractionLoop = new ExtractionLoop({
+    recoverExpired: () => extractionRepository.recoverExpired(),
+    runOne: () => runner.runOne(),
+    report: (event, code) =>
+      console.error(JSON.stringify({ component: "worker", event, code })),
   });
   let stopping = false;
   const pollIntervalMs = Number(
@@ -89,7 +138,7 @@ async function main(): Promise<void> {
         JSON.stringify({
           component: "worker",
           event: "telegram_poll_failed",
-          code: error instanceof Error ? error.message : "telegram_poll_error",
+          code: error instanceof Error ? error.name : "telegram_poll_error",
         }),
       );
     } finally {
@@ -102,6 +151,7 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     clearInterval(pollTimer);
+    await extractionLoop.stop();
     await worker.close();
     await queue.close();
     await workerConnection.quit();
@@ -121,6 +171,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown());
   const replayed = await relay.recoverFromPostgres();
   const dispatched = await relay.dispatchPending();
+  await extractionLoop.start();
   console.log(
     JSON.stringify({
       component: "worker",
@@ -133,7 +184,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const code = error instanceof Error ? error.name : "runtime_error";
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String(error.code)
+      : error instanceof Error
+        ? error.name
+        : "runtime_error";
   console.error(
     JSON.stringify({ component: "worker", event: "startup_failed", code }),
   );

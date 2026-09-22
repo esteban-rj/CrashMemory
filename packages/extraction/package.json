@@ -15,6 +15,7 @@
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
     "@crashmemory/model-gateway": "workspace:*",
+    "@crashmemory/runtime": "workspace:*",
     "pdfjs-dist": "5.4.624",
     "zod": "4.1.12"
   }

@@ -1605,17 +1605,47 @@ export class ExtractionRepository {
     );
   }
 
+  async savePdfPages(input: {
+    userId: string;
+    sourceItemRevisionId: string;
+    pages: Array<{
+      attachmentId: string;
+      page: number;
+      text: string;
+      contentSha256: string;
+    }>;
+  }): Promise<void> {
+    await inTransaction(this.pool, async (client) => {
+      for (const page of input.pages) {
+        await client.query(
+          `INSERT INTO extraction_pdf_pages(id, user_id, source_item_revision_id, attachment_id, page, extracted_text, content_sha256)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (attachment_id, page) DO NOTHING`,
+          [
+            randomUUID(),
+            input.userId,
+            input.sourceItemRevisionId,
+            page.attachmentId,
+            page.page,
+            page.text,
+            page.contentSha256,
+          ],
+        );
+      }
+    });
+  }
+
   async claimNext(): Promise<{
     id: string;
     userId: string;
     sourceItemRevisionId: string;
     privacyProfile: "local-only" | "remote-allowed";
+    attemptNumber: number;
   } | null> {
     return inTransaction(this.pool, async (client) => {
       const result = await client.query<Record<string, unknown>>(
         `WITH next AS (SELECT id FROM extraction_jobs WHERE state = 'pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-         UPDATE extraction_jobs j SET state = 'running', attempts = attempts + 1 FROM next WHERE j.id = next.id
-         RETURNING j.id, j.user_id, j.source_item_revision_id, j.privacy_profile`,
+         UPDATE extraction_jobs j SET state = 'running', attempts = attempts + 1, claimed_at = now() FROM next WHERE j.id = next.id
+         RETURNING j.id, j.user_id, j.source_item_revision_id, j.privacy_profile, j.attempts`,
       );
       const row = result.rows[0];
       return row
@@ -1625,6 +1655,7 @@ export class ExtractionRepository {
             sourceItemRevisionId: String(row.source_item_revision_id),
             privacyProfile: row.privacy_profile as
               "local-only" | "remote-allowed",
+            attemptNumber: Number(row.attempts),
           }
         : null;
     });
@@ -1652,7 +1683,24 @@ export class ExtractionRepository {
     }>;
   }): Promise<void> {
     await inTransaction(this.pool, async (client) => {
+      const job = await client.query<{ source_item_revision_id: string }>(
+        "SELECT source_item_revision_id FROM extraction_jobs WHERE id = $1 AND user_id = $2 AND state = 'running' FOR UPDATE",
+        [input.jobId, input.userId],
+      );
+      if (job.rowCount !== 1)
+        throw new Error("Extraction job cannot be completed twice");
+      const sourceItemRevisionId = job.rows[0]!.source_item_revision_id;
       for (const candidate of input.candidates) {
+        if (candidate.evidence.length === 0)
+          throw new Error("Extraction candidate needs evidence");
+        if (
+          candidate.evidence.some(
+            (evidence) =>
+              evidence.sourceItemRevisionId !== sourceItemRevisionId,
+          )
+        ) {
+          throw new Error("Extraction evidence revision does not match job");
+        }
         for (const evidence of candidate.evidence) {
           await client.query(
             `INSERT INTO evidence(id, user_id, source_item_revision_id, kind, attachment_id, page, start_offset, end_offset, quote, content_sha256)
@@ -1672,12 +1720,13 @@ export class ExtractionRepository {
           );
         }
         await client.query(
-          `INSERT INTO extraction_candidates(id, user_id, source_item_revision_id, title, amount, currency, due, state)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'ready')`,
+          `INSERT INTO extraction_candidates(id, user_id, source_item_revision_id, extraction_job_id, title, amount, currency, due, state)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'ready')`,
           [
             candidate.id,
             input.userId,
             candidate.evidence[0]!.sourceItemRevisionId,
+            input.jobId,
             candidate.title,
             candidate.amount.amount,
             candidate.amount.currency,
@@ -1686,8 +1735,13 @@ export class ExtractionRepository {
         );
         for (const evidence of candidate.evidence)
           await client.query(
-            "INSERT INTO extraction_candidate_evidence(candidate_id, evidence_id) VALUES ($1, $2)",
-            [candidate.id, evidence.id],
+            "INSERT INTO extraction_candidate_evidence(candidate_id, evidence_id, user_id, source_item_revision_id) VALUES ($1, $2, $3, $4)",
+            [
+              candidate.id,
+              evidence.id,
+              input.userId,
+              candidate.evidence[0]!.sourceItemRevisionId,
+            ],
           );
         await client.query(
           `INSERT INTO outbox_events(id, user_id, event_type, aggregate_type, aggregate_id, idempotency_key, occurred_at, payload)
@@ -1705,7 +1759,7 @@ export class ExtractionRepository {
         );
       }
       await client.query(
-        "UPDATE extraction_jobs SET state = 'completed', completed_at = now(), last_error_code = NULL WHERE id = $1 AND user_id = $2",
+        "UPDATE extraction_jobs SET state = 'completed', completed_at = now(), claimed_at = NULL, last_error_code = NULL WHERE id = $1 AND user_id = $2 AND state = 'running'",
         [input.jobId, input.userId],
       );
     });
@@ -1713,8 +1767,18 @@ export class ExtractionRepository {
 
   async fail(jobId: string, userId: string, code: string): Promise<void> {
     await this.pool.query(
-      "UPDATE extraction_jobs SET state = 'manual_review', last_error_code = $3, completed_at = now() WHERE id = $1 AND user_id = $2",
+      "UPDATE extraction_jobs SET state = 'manual_review', last_error_code = $3, completed_at = now(), claimed_at = NULL WHERE id = $1 AND user_id = $2 AND state = 'running'",
       [jobId, userId, code.slice(0, 160)],
     );
+  }
+
+  async recoverExpired(now = new Date(), leaseMs = 180_000): Promise<number> {
+    const expiresAt = new Date(now.getTime() - leaseMs);
+    const result = await this.pool.query(
+      `UPDATE extraction_jobs SET state = 'manual_review', completed_at = $1, claimed_at = NULL, last_error_code = 'lease_expired'
+       WHERE state = 'running' AND claimed_at < $2`,
+      [now, expiresAt],
+    );
+    return result.rowCount ?? 0;
   }
 }

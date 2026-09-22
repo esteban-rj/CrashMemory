@@ -66,7 +66,10 @@ export function loadRemoteModelConfig(
     pricing: {
       version:
         environment.MODEL_PRICING_VERSION ?? "openai-gpt-5.6-terra-2026-09-21",
-      inputUsdPerMillionTokens: environment.MODEL_INPUT_USD_PER_MILLION ?? "2",
+      // Reserve against cache-write pricing (1.25x the $2/M base input price),
+      // because ordinary usage does not reliably distinguish cache writes.
+      inputUsdPerMillionTokens:
+        environment.MODEL_INPUT_USD_PER_MILLION ?? "2.5",
       outputUsdPerMillionTokens:
         environment.MODEL_OUTPUT_USD_PER_MILLION ?? "12",
     },

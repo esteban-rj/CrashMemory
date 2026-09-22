@@ -39,7 +39,7 @@ La selección mantiene la guía documentada en la revisión inicial: Luna para t
 
 **Conteo: 6 Terra + 1 Luna + 3 Sol = 10 sesiones de entrega; I00 añade una Terra de coordinación e I00.1 añade una Sol de integración puntual: 12 unidades en total.** No se programa Astra ni esfuerzo `max`/`ultra`. Estos agentes de desarrollo son independientes de los modelos de extracción que el producto configure en ModelGateway.
 
-I00.1 usa `gpt-5.6-sol` / `high` para recuperar la integración V07. Los conflictos repetidos de I00 en archivos compartidos y el fallo de aplicación del último parche justifican esta escalada concreta. I00.1 tiene rama `codex/i00-merge-recovery`, worktree exclusivo y cupo propio; no añade una undécima entrega funcional ni altera V01–V10.
+I00.1 usa `gpt-5.6-sol` / `high` para recuperar la integración V07. Los conflictos repetidos de I00 en archivos compartidos y el fallo de aplicación del último parche justifican esta escalada concreta. Al no poder reanudar la sesión original I00 por el límite de hilos del cliente, I00.1 continúa la integración V05 en la misma rama, worktree y unidad de conteo, con cupo reservado por raíz. No añade una undécima entrega funcional ni altera V01–V10.
 
 Si un fallo reproducible requiere más capacidad, documentar intentos y escalar esa sesión, sin crear por defecto otra sesión revisora. Si el alcance obliga a dividir una entrega, actualizar el conteo y las dependencias; no anunciar que siguen siendo diez mientras se crean sesiones adicionales.
 
@@ -79,7 +79,7 @@ Las diez sesiones de entrega incluyen código, migraciones, pruebas, documentaci
 
 ```text
 I00 · Coordinación e integración
-├── I00.1 · Recuperación de integración V07
+├── I00.1 · Recuperación de integración V07 y continuidad V05
 ├── V01 → V02 → V03
 ├── V04 · Gmail
 ├── V05 · Extracción → V06 · Reconciliación

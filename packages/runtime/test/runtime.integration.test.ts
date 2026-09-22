@@ -164,7 +164,10 @@ test(
     try {
       const event = await createEvent({ pool, userId });
       const relay = new OutboxRelay(runtime, queue);
-      assert.equal(await relay.dispatchPending(), 1);
+      // The relay scans the shared outbox, so concurrent package tests may
+      // contribute other events. Verify this fixture through its own receipt.
+      assert.ok((await relay.dispatchPending()) >= 1);
+      assert.ok((await runtime.dispatchState(event.id))?.publishedAt);
       await connection.call("FLUSHDB");
       assert.ok((await relay.recoverFromPostgres()) >= 1);
       assert.ok(
