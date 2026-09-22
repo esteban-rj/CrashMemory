@@ -146,14 +146,20 @@ export default function HomePage() {
   const request = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
       const generation = sessionGeneration.current;
-      const response = await fetch(path, {
-        ...init,
-        credentials: "include",
-        headers: {
-          ...(init?.body ? { "Content-Type": "application/json" } : {}),
-          ...(init?.headers ?? {}),
-        },
-      });
+      let response: Response;
+      try {
+        response = await fetch(path, {
+          ...init,
+          credentials: "include",
+          headers: {
+            ...(init?.body ? { "Content-Type": "application/json" } : {}),
+            ...(init?.headers ?? {}),
+          },
+        });
+      } catch (error) {
+        if (generation !== sessionGeneration.current) throw staleResponse();
+        throw error;
+      }
       if (generation !== sessionGeneration.current) throw staleResponse();
       if (response.status === 401) {
         clearSession();
@@ -167,6 +173,7 @@ export default function HomePage() {
       const payload = (await response
         .json()
         .catch(() => ({}))) as Envelope<T> & { error?: { message?: string } };
+      if (generation !== sessionGeneration.current) throw staleResponse();
       if (!response.ok) {
         const error = new Error(
           payload.error?.message ?? "No se pudo completar la solicitud.",
@@ -181,7 +188,13 @@ export default function HomePage() {
   const requestPage = useCallback(
     async <T,>(path: string): Promise<Envelope<T>> => {
       const generation = sessionGeneration.current;
-      const response = await fetch(path, { credentials: "include" });
+      let response: Response;
+      try {
+        response = await fetch(path, { credentials: "include" });
+      } catch (error) {
+        if (generation !== sessionGeneration.current) throw staleResponse();
+        throw error;
+      }
       if (generation !== sessionGeneration.current) throw staleResponse();
       if (response.status === 401) {
         clearSession();
@@ -195,6 +208,7 @@ export default function HomePage() {
       const payload = (await response
         .json()
         .catch(() => ({}))) as Envelope<T> & { error?: { message?: string } };
+      if (generation !== sessionGeneration.current) throw staleResponse();
       if (!response.ok)
         throw new Error(
           payload.error?.message ?? "No se pudo cargar la página.",
@@ -287,6 +301,13 @@ export default function HomePage() {
   }
   async function open(id: string) {
     setSelected(await request<Detail>(`/api/v1/obligations/${id}`));
+  }
+  async function openSafely(id: string) {
+    try {
+      await open(id);
+    } catch (error) {
+      if (!isStale(error)) setMessage((error as Error).message);
+    }
   }
   async function mutate(
     action: string,
@@ -548,11 +569,7 @@ export default function HomePage() {
                           ? "obligation selected"
                           : "obligation"
                       }
-                      onClick={() =>
-                        void open(item.obligationId).catch((error: Error) =>
-                          setMessage(error.message),
-                        )
-                      }
+                      onClick={() => void openSafely(item.obligationId)}
                     >
                       <span>
                         <strong>{item.title}</strong>
