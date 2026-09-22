@@ -12,6 +12,7 @@
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
     "@crashmemory/gmail": "workspace:*",
+    "@crashmemory/notifications": "workspace:*",
     "@crashmemory/runtime": "workspace:*",
     "@crashmemory/security": "workspace:*"
   }
