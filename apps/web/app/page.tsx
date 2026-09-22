@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 type Envelope<T> = { data: T; meta?: { nextCursor?: string | null } };
 type Obligation = {
@@ -81,10 +81,11 @@ const dueText = (due: Obligation["due"]) =>
           new Date(`${due.date}T12:00:00`),
         )
       : due.at
-        ? new Intl.DateTimeFormat("es-CO", {
+        ? `${new Intl.DateTimeFormat("es-CO", {
             dateStyle: "medium",
             timeStyle: "short",
-          }).format(new Date(due.at))
+            timeZone: due.timeZone,
+          }).format(new Date(due.at))} (${due.timeZone})`
         : "Fecha no disponible";
 const money = (value: Obligation["amount"]) =>
   `${value.currency} ${value.amount}`;
@@ -97,6 +98,7 @@ const reviewReason = (code?: string) =>
   })[code ?? ""] ?? "La extracción quedó bloqueada para revisión manual.";
 
 export default function HomePage() {
+  const sessionGeneration = useRef(0);
   const [csrf, setCsrf] = useState("");
   const [user, setUser] = useState<{ email: string; timeZone: string } | null>(
     null,
@@ -121,6 +123,7 @@ export default function HomePage() {
     "obligations",
   );
   const clearSession = useCallback(() => {
+    sessionGeneration.current += 1;
     setUser(null);
     setCsrf("");
     setSelected(null);
@@ -133,8 +136,16 @@ export default function HomePage() {
     setMessage("");
     sessionStorage.removeItem("crashmemory.session");
   }, []);
+  const isStale = (error: unknown): boolean =>
+    error instanceof Error && error.name === "CrashMemoryStaleResponse";
+  const staleResponse = () => {
+    const error = new Error("Obsolete response");
+    error.name = "CrashMemoryStaleResponse";
+    return error;
+  };
   const request = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
+      const generation = sessionGeneration.current;
       const response = await fetch(path, {
         ...init,
         credentials: "include",
@@ -143,6 +154,7 @@ export default function HomePage() {
           ...(init?.headers ?? {}),
         },
       });
+      if (generation !== sessionGeneration.current) throw staleResponse();
       if (response.status === 401) {
         clearSession();
         setLoginError("Tu sesión terminó. Inicia sesión de nuevo.");
@@ -168,7 +180,9 @@ export default function HomePage() {
   );
   const requestPage = useCallback(
     async <T,>(path: string): Promise<Envelope<T>> => {
+      const generation = sessionGeneration.current;
       const response = await fetch(path, { credentials: "include" });
+      if (generation !== sessionGeneration.current) throw staleResponse();
       if (response.status === 401) {
         clearSession();
         setLoginError("Tu sesión terminó. Inicia sesión de nuevo.");
@@ -239,12 +253,14 @@ export default function HomePage() {
   useEffect(() => {
     if (user)
       void load().catch((error: Error) => {
+        if (isStale(error)) return;
         sessionStorage.removeItem("crashmemory.session");
         setMessage(error.message);
       });
   }, [user, load]);
   async function login(event: FormEvent) {
     event.preventDefault();
+    sessionGeneration.current += 1;
     setBusy(true);
     setLoginError("");
     try {
@@ -263,6 +279,7 @@ export default function HomePage() {
       );
       setPassword("");
     } catch (error) {
+      if (isStale(error)) return;
       setLoginError((error as Error).message);
     } finally {
       setBusy(false);
@@ -295,6 +312,7 @@ export default function HomePage() {
       await load();
       setMessage("Cambio guardado.");
     } catch (error) {
+      if (isStale(error)) return;
       const typed = error as Error & { status?: number };
       if (typed.status === 409) {
         await open(selected.id);
@@ -318,6 +336,7 @@ export default function HomePage() {
       );
       window.location.assign(result.authorizationUrl);
     } catch (error) {
+      if (isStale(error)) return;
       setMessage((error as Error).message);
     }
   }
@@ -331,6 +350,7 @@ export default function HomePage() {
         `En Telegram envía ${result.startCommand}. Código válido hasta ${new Date(result.expiresAt).toLocaleString("es-CO")}.`,
       );
     } catch (error) {
+      if (isStale(error)) return;
       setMessage((error as Error).message);
     }
   }
@@ -344,6 +364,7 @@ export default function HomePage() {
       await load();
       setMessage("Gmail desconectado. Los datos históricos se conservaron.");
     } catch (error) {
+      if (isStale(error)) return;
       const typed = error as Error & { status?: number };
       setMessage(
         typed.status === 404 ? "Acción no disponible todavía." : typed.message,
@@ -360,6 +381,7 @@ export default function HomePage() {
       await load();
       setMessage("Telegram desvinculado.");
     } catch (error) {
+      if (isStale(error)) return;
       const typed = error as Error & { status?: number };
       setMessage(
         typed.status === 404 ? "Acción no disponible todavía." : typed.message,
@@ -374,6 +396,7 @@ export default function HomePage() {
       );
       setAttempts((previous) => ({ ...previous, [reminderId]: values }));
     } catch (error) {
+      if (isStale(error)) return;
       setMessage((error as Error).message);
     }
   }
@@ -388,6 +411,7 @@ export default function HomePage() {
       clearSession();
     } catch (error) {
       const typed = error as Error & { status?: number };
+      if (isStale(error)) return;
       if (typed.status === 401) clearSession();
       else setMessage(typed.message);
     }
