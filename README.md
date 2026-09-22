@@ -215,22 +215,22 @@ TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemo
 
 Antes de cada petición remota, `ModelBudgetRepository.reserve` bloquea el presupuesto USD y reserva el máximo del JSON completo enviado (instrucciones, documento y esquema), limitado por `MODEL_MAX_INPUT_TOKENS` y `MODEL_MAX_OUTPUT_TOKENS`. Las tarifas por millón son versionadas y configurables. La respuesta con uso queda `estimated`; sin uso se conserva la estimación conservadora. Un timeout o fallo de transporte queda `unknown` y mantiene su reserva, nunca se muestra como coste cero. El ledger guarda sólo proveedor, modelo, versión, unidades y coste; no guarda correo, PDF, prompt, respuesta ni credencial.
 
-El presupuesto se configura por CLI local, sin endpoint HTTP ni llamada a proveedor. Cree o identifique primero un usuario sintético local con `pnpm db:seed` y copie el UUID que informa. Reemplace el UUID y la URL por los de su base antes de ejecutar:
+El presupuesto se configura por CLI local, sin endpoint HTTP ni llamada a proveedor. Cree o identifique primero un usuario sintético local con `pnpm db:seed` y copie el UUID que informa. Use instantes UTC exactos con formato `YYYY-MM-DDTHH:mm:ssZ` y ajuste el período para que contenga la fecha de ejecución: fuera del período no habrá límite activo y la reserva remota queda bloqueada. Reemplace el UUID y la URL por los de su base antes de ejecutar:
 
 ```bash
 DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
   pnpm --filter @crashmemory/db budget:set -- \
   --user-id '00000000-0000-4000-8000-000000000001' \
   --limit-usd '25.00' \
-  --period-start '2026-10-01T00:00:00Z' \
-  --period-end '2026-11-01T00:00:00Z'
+  --period-start '2026-09-01T00:00:00Z' \
+  --period-end '2026-10-01T00:00:00Z'
 
 DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
   pnpm --filter @crashmemory/db budget:ledger -- \
   --user-id '00000000-0000-4000-8000-000000000001' --limit 25
 ```
 
-El primer comando valida decimales exactos y fechas, imprime el límite creado sin credenciales ni contenido de correo y rechaza intervalos solapados para el mismo usuario. El segundo devuelve sólo proveedor, modelo, versión de precio, estado, unidades, coste, secuencia y fecha; no devuelve prompts, documentos, respuestas ni secretos. Un período sin límite aplicable, o una base heredada con más de un período aplicable, bloquea la reserva.
+El primer comando valida decimales exactos e instantes UTC reales, imprime el límite creado sin credenciales ni contenido de correo y rechaza intervalos solapados para el mismo usuario. El segundo devuelve sólo proveedor, modelo, versión de precio, estado, unidades, coste, secuencia y fecha; no devuelve prompts, documentos, respuestas ni secretos. Un período sin límite aplicable, o una base heredada con más de un período aplicable, bloquea la reserva.
 
 ## Avisos Telegram V07
 

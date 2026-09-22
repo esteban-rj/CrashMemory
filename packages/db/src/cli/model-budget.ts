@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createPool } from "../client.ts";
 import { ModelBudgetRepository } from "../repositories.ts";
+import { parseUtcInstant } from "./model-budget-arguments.ts";
 
 type Arguments = Record<string, string>;
 
@@ -32,14 +33,6 @@ function decimal(value: string, name: string): string {
   return value;
 }
 
-function instant(value: string, name: string): Date {
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    throw new Error(`${name} must be an ISO-8601 instant`);
-  }
-  return parsed;
-}
-
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
 
@@ -51,11 +44,11 @@ try {
   const budgets = new ModelBudgetRepository(pool);
   if (command === "set") {
     const userId = required(arguments_, "--user-id");
-    const periodStart = instant(
+    const periodStart = parseUtcInstant(
       required(arguments_, "--period-start"),
       "--period-start",
     );
-    const periodEnd = instant(
+    const periodEnd = parseUtcInstant(
       required(arguments_, "--period-end"),
       "--period-end",
     );
