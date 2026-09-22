@@ -2,6 +2,7 @@ import { buildApp } from "./app.ts";
 import { SourceRepository, createPool } from "@crashmemory/db";
 import { createGooglePubSubTokenVerifier } from "./gmail.ts";
 import { TelegramLinkService } from "@crashmemory/notifications";
+import { S3ObjectStorage } from "@crashmemory/runtime";
 import type { FastifyServerOptions } from "fastify";
 import {
   CredentialCipher,
@@ -41,6 +42,19 @@ const gmailConfigured = Boolean(
 );
 const app = buildApp({
   pool,
+  ...(pool &&
+  process.env.OBJECT_STORAGE_ENDPOINT &&
+  process.env.OBJECT_STORAGE_ACCESS_KEY &&
+  process.env.OBJECT_STORAGE_SECRET_KEY
+    ? {
+        objectStorage: new S3ObjectStorage({
+          endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
+          bucket: process.env.OBJECT_STORAGE_BUCKET ?? "crashmemory",
+          accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY,
+          secretAccessKey: process.env.OBJECT_STORAGE_SECRET_KEY,
+        }),
+      }
+    : {}),
   ...(pool
     ? {
         auth: {

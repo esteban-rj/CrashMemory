@@ -31,6 +31,10 @@ import {
   createOutboxQueue,
   startOutboxWorker,
 } from "@crashmemory/runtime";
+import {
+  ReconciliationService,
+  registerReconciliationConsumer,
+} from "@crashmemory/reconciliation";
 import { CredentialCipher, hashOpaqueToken } from "@crashmemory/security";
 import {
   loadExtractionPrivacyProfile,
@@ -73,20 +77,22 @@ async function main(): Promise<void> {
   );
   const registry = new ConsumerRegistry(runtime);
   registerExtractionConsumer(registry, loadExtractionPrivacyProfile());
+  registerReconciliationConsumer(registry, new ReconciliationService(pool));
 
   let linkPoller: TelegramLinkPollingRunner | undefined;
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const keyring = process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON;
   const activeKeyVersion = process.env.CREDENTIAL_ACTIVE_KEY_VERSION;
+  const scheduler = new ReminderScheduler(
+    pool,
+    undefined,
+    process.env.NOTIFICATIONS_AUTOMATIC_ENABLED === "true",
+  );
   if (telegramToken && keyring && activeKeyVersion) {
     const cipher = CredentialCipher.fromEnvironment(keyring, activeKeyVersion);
     registerNotificationConsumers(
       registry,
-      new ReminderScheduler(
-        pool,
-        undefined,
-        process.env.NOTIFICATIONS_AUTOMATIC_ENABLED === "true",
-      ),
+      scheduler,
       new NotificationDispatcher(
         pool,
         cipher,
@@ -101,6 +107,8 @@ async function main(): Promise<void> {
       new TelegramGetUpdatesClient(telegramToken),
       new TelegramUpdateRecorder(pool, botKey, links),
     );
+  } else {
+    registerNotificationConsumers(registry, scheduler);
   }
 
   const relay = new OutboxRelay(runtime, queue);

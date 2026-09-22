@@ -181,7 +181,13 @@ export const OutboxEventSchema = z.discriminatedUnion("type", [
     payload: z
       .object({
         obligationId: z.string().min(1),
-        cause: z.enum(["due_changed", "paid", "discarded", "deleted"]),
+        cause: z.enum([
+          "due_changed",
+          "paid",
+          "discarded",
+          "deleted",
+          "conflict",
+        ]),
       })
       .strict(),
   }),

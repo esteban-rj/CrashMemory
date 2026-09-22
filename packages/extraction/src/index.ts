@@ -57,6 +57,14 @@ const rawCandidateSchema = z
     due: DueValueSchema.nullable(),
     evidence: z.array(rawEvidenceSchema).min(1),
     ambiguous: z.boolean().default(false),
+    identity: z
+      .object({
+        issuer: z.string().min(3).max(200),
+        reference: z.string().min(4).max(200),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -84,6 +92,7 @@ export interface ObligationCandidate {
   evidence: VerifiedEvidence[];
   reviewState: "ready" | "manual_review";
   reasons: string[];
+  identity: { issuer: string; reference: string } | null;
 }
 
 export interface ExtractionResult {
@@ -110,7 +119,14 @@ const modelJsonSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["title", "amount", "due", "evidence", "ambiguous"],
+        required: [
+          "title",
+          "amount",
+          "due",
+          "evidence",
+          "ambiguous",
+          "identity",
+        ],
         properties: {
           title: { type: "string", maxLength: 500 },
           amount: {
@@ -153,6 +169,20 @@ const modelJsonSchema = {
             ],
           },
           ambiguous: { type: "boolean" },
+          identity: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["issuer", "reference"],
+                properties: {
+                  issuer: { type: "string" },
+                  reference: { type: "string" },
+                },
+              },
+            ],
+          },
           evidence: {
             type: "array",
             minItems: 1,
@@ -257,6 +287,23 @@ function candidateFromRaw(
   ) {
     return { reason: { code: "missing_verifiable_fields" } };
   }
+  const identity =
+    candidate.identity &&
+    verified.some((item) => {
+      const quote = item.quote.normalize("NFKC").toLocaleLowerCase("en");
+      return (
+        quote.includes(
+          candidate.identity!.issuer.normalize("NFKC").toLocaleLowerCase("en"),
+        ) &&
+        quote.includes(
+          candidate
+            .identity!.reference.normalize("NFKC")
+            .toLocaleLowerCase("en"),
+        )
+      );
+    })
+      ? candidate.identity
+      : null;
   return {
     title: candidate.title,
     amount: candidate.amount,
@@ -264,6 +311,7 @@ function candidateFromRaw(
     evidence: verified,
     reviewState: "ready",
     reasons: [],
+    identity,
   };
 }
 
@@ -311,7 +359,7 @@ export class ExtractionService {
       attemptNumber: input.attemptNumber,
       request: {
         instructions:
-          "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. Offsets are UTF-16 code units relative to exactly one body or PDF page source. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible.",
+          "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. Offsets are UTF-16 code units relative to exactly one body or PDF page source. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible. Set identity to issuer and a bill-specific invoice, receipt or settlement number only when both occur verbatim in one cited fragment and the number is labeled as such. Account or customer numbers alone are not bill identities. Otherwise set identity null. Never identify an obligation by title, amount or due date.",
         document: sourceText(input.document),
         schemaName: "crashmemory_obligation_extraction",
         schema: modelJsonSchema,
@@ -392,6 +440,7 @@ export class DurableExtractionRunner {
           title: candidate.title,
           amount: candidate.amount,
           due: candidate.due,
+          identity: candidate.identity,
           evidence: candidate.evidence.map((evidence) => ({
             ...evidence,
             id: randomUUID(),
@@ -479,8 +528,9 @@ export class PostgresExtractionDocumentLoader {
 
 /** Normalizes amounts found in locally formatted source text, never guessing a currency. */
 export function parseLocalizedMoney(text: string): Money | null {
-  const match =
-    /(?:\b(COP|USD|EUR)\b\s*)?(?:\$\s*)?([0-9][0-9.,\s]{0,30})/i.exec(text);
+  const match = /\b(COP|USD|EUR)\b\s*(?:\$\s*)?([0-9][0-9.,\s]{0,30})/i.exec(
+    text,
+  );
   if (!match?.[1]) return null;
   const currency = match[1].toUpperCase();
   const value = match[2].replace(/\s/g, "");

@@ -1133,7 +1133,8 @@ export class NotificationRepository {
       `SELECT 1 FROM reminders r
        JOIN obligations o ON o.id = r.obligation_id AND o.user_id = r.user_id
        WHERE r.id = $1 AND r.user_id = $2 AND r.target_version = $3
-         AND r.state = 'delivering' AND o.state = 'confirmed'`,
+         AND r.state = 'delivering' AND o.state = 'confirmed'
+         AND o.current_version_id = r.obligation_version_id`,
       [input.reminderId, input.userId, input.targetVersion],
     );
     return result.rowCount === 1;
@@ -1669,6 +1670,7 @@ export class ExtractionRepository {
       title: string;
       amount: Money;
       due: DueValue;
+      identity?: { issuer: string; reference: string } | null;
       evidence: Array<{
         id: string;
         kind: "email_body_fragment" | "pdf_text_fragment";
@@ -1720,8 +1722,8 @@ export class ExtractionRepository {
           );
         }
         await client.query(
-          `INSERT INTO extraction_candidates(id, user_id, source_item_revision_id, extraction_job_id, title, amount, currency, due, state)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'ready')`,
+          `INSERT INTO extraction_candidates(id, user_id, source_item_revision_id, extraction_job_id, title, amount, currency, due, state, identity)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'ready',$9)`,
           [
             candidate.id,
             input.userId,
@@ -1731,6 +1733,7 @@ export class ExtractionRepository {
             candidate.amount.amount,
             candidate.amount.currency,
             candidate.due,
+            candidate.identity ?? null,
           ],
         );
         for (const evidence of candidate.evidence)

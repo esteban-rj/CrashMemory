@@ -1,11 +1,12 @@
 {
-  "name": "@crashmemory/api",
+  "name": "@crashmemory/reconciliation",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "demo": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --import tsx test/*.test.ts"
@@ -13,12 +14,7 @@
   "dependencies": {
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
-    "@crashmemory/gmail": "workspace:*",
-    "@crashmemory/notifications": "workspace:*",
-    "@crashmemory/reconciliation": "workspace:*",
     "@crashmemory/runtime": "workspace:*",
-    "@crashmemory/security": "workspace:*",
-    "fastify": "5.12.5",
     "pg": "8.16.3"
   },
   "devDependencies": {

@@ -431,12 +431,7 @@ export class ReminderScheduler {
       );
       const row = canonical.rows[0];
       const repository = new NotificationRepository(client);
-      if (
-        !row ||
-        row.state === "paid" ||
-        row.state === "discarded" ||
-        event.payload.cause === "deleted"
-      ) {
+      if (!row || row.state !== "confirmed") {
         await repository.cancelForObligation(
           event.userId,
           event.payload.obligationId,
@@ -575,7 +570,7 @@ export class NotificationDispatcher {
 export function registerNotificationConsumers(
   registry: ConsumerRegistry,
   scheduler: ReminderScheduler,
-  dispatcher: NotificationDispatcher,
+  dispatcher?: NotificationDispatcher,
 ): void {
   registry.register({
     name: "notifications.schedule-version.v1",
@@ -595,13 +590,14 @@ export function registerNotificationConsumers(
       await scheduler.cancelForChange(event, client);
     },
   });
-  registry.registerExternal({
-    name: "notifications.telegram-delivery.v1",
-    eventTypes: ["reminder.delivery.requested.v1"],
-    handle: async (event) => {
-      if (event.type !== "reminder.delivery.requested.v1")
-        throw new Error("Unexpected notification event");
-      await dispatcher.deliver(event);
-    },
-  });
+  if (dispatcher)
+    registry.registerExternal({
+      name: "notifications.telegram-delivery.v1",
+      eventTypes: ["reminder.delivery.requested.v1"],
+      handle: async (event) => {
+        if (event.type !== "reminder.delivery.requested.v1")
+          throw new Error("Unexpected notification event");
+        await dispatcher.deliver(event);
+      },
+    });
 }

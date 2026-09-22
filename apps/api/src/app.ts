@@ -5,6 +5,8 @@ import { TelegramLinkService } from "@crashmemory/notifications";
 import { registerAuthRoutes, type AuthConfig } from "./auth.ts";
 import { registerGmailRoutes, type GmailRouteConfig } from "./gmail.ts";
 import { registerTelegramRoutes } from "./telegram.ts";
+import { registerObligationRoutes } from "./obligations.ts";
+import type { ObjectStorage } from "@crashmemory/runtime";
 
 export function buildApp(
   options: {
@@ -12,6 +14,7 @@ export function buildApp(
     auth?: AuthConfig;
     gmail?: GmailRouteConfig;
     telegramLinks?: TelegramLinkService;
+    objectStorage?: ObjectStorage;
     logger?: FastifyServerOptions["logger"];
   } = {},
 ) {
@@ -45,6 +48,7 @@ export function buildApp(
   app.addHook("onSend", async (request, reply) => {
     if (request.url.startsWith("/api/v1/")) {
       reply.header("X-CrashMemory-Contract", CONTRACT_VERSION);
+      reply.header("Cache-Control", "no-store");
     }
   });
 
@@ -60,6 +64,12 @@ export function buildApp(
 
   if (options.pool && options.auth) {
     registerAuthRoutes(app, options.pool, options.auth);
+    registerObligationRoutes(
+      app,
+      options.pool,
+      options.auth,
+      options.objectStorage,
+    );
     registerGmailRoutes(app, options.pool, options.auth, options.gmail);
     registerTelegramRoutes(
       app,

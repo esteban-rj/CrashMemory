@@ -1,6 +1,49 @@
-# CrashMemory — Gmail, extracción verificable y avisos Telegram
+# CrashMemory — Gmail, obligaciones con evidencia y avisos Telegram
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La reconciliación y la web mínima siguen pendientes. El flujo se valida con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La web mínima sigue pendiente. El flujo se valida con servicios locales y proveedores simulados.
+
+## Reconciliación V06 y API
+
+V06 conserva un ID lógico por factura con emisor y número de factura/recibo/liquidación comprobados en la misma cita. Una cuenta de cliente por sí sola no une facturas mensuales. Candidatos sin ancla quedan separados para revisión; un correo más antiguo no revierte silenciosamente un vencimiento reciente. Cada cambio crea una versión inmutable. Confirmar o corregir protege los campos frente a inferencias futuras; éstas se presentan como conflictos con su propuesta y evidencia. Pagar y descartar cancelan avisos y no se revierten por replay. Sólo las obligaciones `confirmed` con política automática habilitada pueden programar Telegram.
+
+La [referencia HTTP V06](docs/contracts/reconciliation-http-v1.md) detalla rutas, cuerpos, estados y errores para la web V08. `GET /api/v1/obligations` lista con cursor; `GET /api/v1/obligations/:id` ofrece histórico, evidencia, conflictos y campos protegidos. `GET /api/v1/evidence/:id`, `/text` y `/source` dan cita, texto y soporte PDF/cuerpo tras comprobar el dueño. `GET /api/v1/extraction/reviews` muestra PDFs escaneados o trabajos bloqueados con un código saneado, sin crear obligaciones ficticias. `POST` sobre `/confirm`, `/correct`, `/discard`, `/pay` y `/resolve` exige cookie, origen, JSON, CSRF y `expectedVersion`; una versión obsoleta devuelve 409.
+
+En este host se levantó el namespace aislado V06 y se aplicó desde cero la migración `0008_v06_reconciliation.sql` (el número `0007` permanece reservado):
+
+```bash
+COMPOSE_PROJECT_NAME=crashmemory-v06 POSTGRES_DB=crashmemory_v06 POSTGRES_PORT=54336 \
+REDIS_PORT=6396 MINIO_PORT=9021 MINIO_CONSOLE_PORT=9022 \
+  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d
+
+DATABASE_URL=postgres://crashmemory:crashmemory@127.0.0.1:54336/crashmemory_v06 \
+  pnpm db:migrate
+```
+
+Para usar la API local en `4316`, configure PostgreSQL y, para abrir originales, MinIO. El nombre del bucket debe existir antes de guardar originales; el pipeline Gmail usa los mismos parámetros de almacenamiento:
+
+```bash
+API_PORT=4316 APP_ENV=local APP_ORIGIN=http://127.0.0.1:3006 \
+APP_SESSION_COOKIE_NAME=crashmemory_v06_session APP_SESSION_COOKIE_SECURE=false \
+DATABASE_URL=postgres://crashmemory:crashmemory@127.0.0.1:54336/crashmemory_v06 \
+OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9021 OBJECT_STORAGE_BUCKET=crashmemory-v06 \
+OBJECT_STORAGE_ACCESS_KEY=crashmemory OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
+  pnpm --filter @crashmemory/api demo
+```
+
+El login local usa el usuario creado con `pnpm db:seed`; V06 no añade registro público. El worker V06 registra el consumidor real `obligation.candidate.created.v1` y el scheduler V07 incluso si Telegram no está configurado; con política automática deshabilitada por defecto no se envían avisos. Para una entrega real se requieren el bot vinculado y `NOTIFICATIONS_AUTOMATIC_ENABLED=true` según la sección V07.
+
+La cadena sintética V05→V06→V07 y la API con dos usuarios se comprobaron en PostgreSQL real usando:
+
+```bash
+TEST_DATABASE_URL=postgres://crashmemory:crashmemory@127.0.0.1:54336/crashmemory_v06 \
+TEST_REDIS_URL=redis://127.0.0.1:6396 \
+TEST_OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9021 \
+TEST_OBJECT_STORAGE_BUCKET=crashmemory-v06-test \
+TEST_OBJECT_STORAGE_ACCESS_KEY=crashmemory \
+TEST_OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
+  pnpm check
+pnpm build
+```
 
 ## Requisitos
 

@@ -16,6 +16,7 @@
     "@crashmemory/gmail": "workspace:*",
     "@crashmemory/model-gateway": "workspace:*",
     "@crashmemory/notifications": "workspace:*",
+    "@crashmemory/reconciliation": "workspace:*",
     "@crashmemory/runtime": "workspace:*",
     "@crashmemory/security": "workspace:*"
   }

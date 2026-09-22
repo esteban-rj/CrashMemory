@@ -246,3 +246,54 @@ test("scanned or unsupported PDFs are reported for manual review instead of OCR"
     },
   );
 });
+
+test("persists a proposed invoice identity only when both strings occur in cited evidence", async () => {
+  const text = "Acme Agua Factura INV-1001 COP 48.50 vence 2026-10-15";
+  const output = (reference: string) => ({
+    candidates: [
+      {
+        title: "Factura de agua",
+        amount: { amount: "48.50", currency: "COP" },
+        due: {
+          kind: "civil_date",
+          date: "2026-10-15",
+          timeZone: "America/Bogota",
+        },
+        evidence: [
+          {
+            source: "body",
+            attachmentId: null,
+            page: null,
+            startOffset: 0,
+            endOffset: text.length,
+          },
+        ],
+        ambiguous: false,
+        identity: { issuer: "Acme Agua", reference },
+      },
+    ],
+  });
+  const run = async (reference: string) =>
+    new ExtractionService(
+      new ModelGateway({
+        local: new FakeStructuredModel({ value: output(reference) }),
+        remoteConfig: loadRemoteModelConfig({}),
+      }),
+    ).extract({
+      profile: "local-only",
+      userId: "u",
+      operationKey: reference,
+      attemptNumber: 1,
+      document: {
+        sourceItemRevisionId: "r",
+        body: { text, contentSha256: sha256Text(text) },
+        pdfPages: [],
+        userTimeZone: "America/Bogota",
+      },
+    });
+  assert.deepEqual((await run("INV-1001")).candidates[0]?.identity, {
+    issuer: "Acme Agua",
+    reference: "INV-1001",
+  });
+  assert.equal((await run("INV-1002")).candidates[0]?.identity, null);
+});
