@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   OAuthCallbackRepository,
+  ModelBudgetRepository,
   ObligationRepository,
   SessionRepository,
   SourceRepository,
@@ -23,6 +24,74 @@ const databaseUrl = process.env.TEST_DATABASE_URL;
 function pgCode(error: unknown): string | undefined {
   return (error as { code?: string }).code;
 }
+
+test(
+  "model budget reservations serialize concurrent attempts and keep unknown costs reserved",
+  { skip: !databaseUrl },
+  async () => {
+    const pool = createPool(databaseUrl!, { max: 4 });
+    const userId = randomUUID();
+    try {
+      await migrate(pool);
+      await new UserRepository(pool).create({
+        id: userId,
+        emailNormalized: `${userId}@example.test`,
+        passwordHash: await hashPassword("synthetic-model-budget-password"),
+        timeZone: "America/Bogota",
+      });
+      const budgets = new ModelBudgetRepository(pool);
+      await budgets.setLimit({
+        id: randomUUID(),
+        userId,
+        limitAmountUsd: "0.010000",
+        periodStart: new Date("2026-09-01T00:00:00Z"),
+        periodEnd: new Date("2026-10-01T00:00:00Z"),
+      });
+      const reserve = (operationKey: string) =>
+        budgets.reserve({
+          id: randomUUID(),
+          userId,
+          operationKey,
+          attemptNumber: 1,
+          maximumCostUsd: "0.006000",
+          provider: "openai",
+          model: "gpt-5.6-terra",
+          pricingVersion: "synthetic-v1",
+          maximumInputUnits: 100,
+          maximumOutputUnits: 100,
+          now: new Date("2026-09-21T00:00:00Z"),
+        });
+      const concurrent = await Promise.allSettled([reserve("a"), reserve("b")]);
+      const reserved = concurrent.filter(
+        (
+          result,
+        ): result is PromiseFulfilledResult<
+          Awaited<ReturnType<typeof reserve>>
+        > => result.status === "fulfilled",
+      );
+      assert.equal(reserved.length, 1);
+      await budgets.markUnknown({
+        reservationId: reserved[0]!.value.id,
+        userId,
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        pricingVersion: "synthetic-v1",
+      });
+      const usage = await pool.query<{ status: string; cost_amount: string }>(
+        "SELECT status, cost_amount::text FROM model_usage_ledger WHERE user_id = $1 ORDER BY entry_sequence",
+        [userId],
+      );
+      assert.deepEqual(
+        usage.rows.map((row) => row.status),
+        ["reserved", "unknown"],
+      );
+      assert.equal(usage.rows[1]?.cost_amount, "0.006000");
+    } finally {
+      await pool.query("DELETE FROM users WHERE id = $1", [userId]);
+      await pool.end();
+    }
+  },
+);
 
 test(
   "a failed migration operation releases its transaction, lock and connection",

@@ -1,0 +1,21 @@
+{
+  "name": "@crashmemory/extraction",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx test/extraction.test.ts"
+  },
+  "dependencies": {
+    "@crashmemory/contracts": "workspace:*",
+    "@crashmemory/db": "workspace:*",
+    "@crashmemory/model-gateway": "workspace:*",
+    "pdfjs-dist": "5.4.624",
+    "zod": "4.1.12"
+  }
+}
