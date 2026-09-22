@@ -1269,12 +1269,13 @@ export class ExtractionRepository {
     userId: string;
     sourceItemRevisionId: string;
     privacyProfile: "local-only" | "remote-allowed";
+    attemptNumber: number;
   } | null> {
     return inTransaction(this.pool, async (client) => {
       const result = await client.query<Record<string, unknown>>(
         `WITH next AS (SELECT id FROM extraction_jobs WHERE state = 'pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
          UPDATE extraction_jobs j SET state = 'running', attempts = attempts + 1, claimed_at = now() FROM next WHERE j.id = next.id
-         RETURNING j.id, j.user_id, j.source_item_revision_id, j.privacy_profile`,
+         RETURNING j.id, j.user_id, j.source_item_revision_id, j.privacy_profile, j.attempts`,
       );
       const row = result.rows[0];
       return row
@@ -1284,6 +1285,7 @@ export class ExtractionRepository {
             sourceItemRevisionId: String(row.source_item_revision_id),
             privacyProfile: row.privacy_profile as
               "local-only" | "remote-allowed",
+            attemptNumber: Number(row.attempts),
           }
         : null;
     });
@@ -1311,13 +1313,24 @@ export class ExtractionRepository {
     }>;
   }): Promise<void> {
     await inTransaction(this.pool, async (client) => {
-      const job = await client.query(
-        "SELECT 1 FROM extraction_jobs WHERE id = $1 AND user_id = $2 AND state = 'running' FOR UPDATE",
+      const job = await client.query<{ source_item_revision_id: string }>(
+        "SELECT source_item_revision_id FROM extraction_jobs WHERE id = $1 AND user_id = $2 AND state = 'running' FOR UPDATE",
         [input.jobId, input.userId],
       );
       if (job.rowCount !== 1)
         throw new Error("Extraction job cannot be completed twice");
+      const sourceItemRevisionId = job.rows[0]!.source_item_revision_id;
       for (const candidate of input.candidates) {
+        if (candidate.evidence.length === 0)
+          throw new Error("Extraction candidate needs evidence");
+        if (
+          candidate.evidence.some(
+            (evidence) =>
+              evidence.sourceItemRevisionId !== sourceItemRevisionId,
+          )
+        ) {
+          throw new Error("Extraction evidence revision does not match job");
+        }
         for (const evidence of candidate.evidence) {
           await client.query(
             `INSERT INTO evidence(id, user_id, source_item_revision_id, kind, attachment_id, page, start_offset, end_offset, quote, content_sha256)
@@ -1384,12 +1397,12 @@ export class ExtractionRepository {
 
   async fail(jobId: string, userId: string, code: string): Promise<void> {
     await this.pool.query(
-      "UPDATE extraction_jobs SET state = 'manual_review', last_error_code = $3, completed_at = now() WHERE id = $1 AND user_id = $2",
+      "UPDATE extraction_jobs SET state = 'manual_review', last_error_code = $3, completed_at = now(), claimed_at = NULL WHERE id = $1 AND user_id = $2 AND state = 'running'",
       [jobId, userId, code.slice(0, 160)],
     );
   }
 
-  async recoverExpired(now = new Date(), leaseMs = 60_000): Promise<number> {
+  async recoverExpired(now = new Date(), leaseMs = 180_000): Promise<number> {
     const expiresAt = new Date(now.getTime() - leaseMs);
     const result = await this.pool.query(
       `UPDATE extraction_jobs SET state = 'manual_review', completed_at = $1, claimed_at = NULL, last_error_code = 'lease_expired'

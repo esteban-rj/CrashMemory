@@ -21,7 +21,11 @@ import {
   createOutboxQueue,
   startOutboxWorker,
 } from "@crashmemory/runtime";
-import { registerExtractionConsumer } from "./extraction-consumer.ts";
+import {
+  loadExtractionPrivacyProfile,
+  registerExtractionConsumer,
+} from "./extraction-consumer.ts";
+import { ExtractionLoop } from "./extraction-loop.ts";
 
 function required(name: "DATABASE_URL" | "REDIS_URL"): string {
   const value = process.env[name];
@@ -57,21 +61,27 @@ async function main(): Promise<void> {
     new PostgresExtractionDocumentLoader(pool, extractionRepository, storage),
   );
   const registry = new ConsumerRegistry(runtime);
-  registerExtractionConsumer(registry);
+  registerExtractionConsumer(registry, loadExtractionPrivacyProfile());
   const relay = new OutboxRelay(runtime, queue);
   const { worker, connection: workerConnection } = startOutboxWorker({
     redisUrl: required("REDIS_URL"),
     registry,
   });
+  const extractionLoop = new ExtractionLoop({
+    recoverExpired: () => extractionRepository.recoverExpired(),
+    runOne: () => runner.runOne(),
+    report: (event, code) =>
+      console.error(JSON.stringify({ component: "worker", event, code })),
+  });
   let stopping = false;
   const shutdown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    await extractionLoop.stop();
     await worker.close();
     await queue.close();
     await workerConnection.quit();
     await queueConnection.quit();
-    clearInterval(extractionTimer);
     await pool.end();
   };
   worker.on("error", (error) => {
@@ -87,8 +97,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown());
   const replayed = await relay.recoverFromPostgres();
   const dispatched = await relay.dispatchPending();
-  await extractionRepository.recoverExpired();
-  const extractionTimer = setInterval(() => void runner.runOne(), 1_000);
+  await extractionLoop.start();
   console.log(
     JSON.stringify({
       component: "worker",

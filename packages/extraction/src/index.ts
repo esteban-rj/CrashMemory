@@ -365,7 +365,7 @@ export class DurableExtractionRunner {
         profile: job.privacyProfile,
         userId: job.userId,
         operationKey: job.id,
-        attemptNumber: 1,
+        attemptNumber: job.attemptNumber,
         document,
       });
       if (result.reviewRequired.length > 0) {

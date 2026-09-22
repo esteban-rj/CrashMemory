@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DurableRuntimeRepository,
   ExtractionRepository,
+  ModelBudgetRepository,
   SourceRepository,
   createPool,
   migrate,
@@ -254,6 +255,71 @@ test(
         reason: "incremental",
         messages: [
           {
+            externalId: "remote-allowed-mail",
+            historyId: "3",
+            original: new TextEncoder().encode("remote allowed"),
+            body: "Correo autorizado para el adaptador remoto sintético.",
+            attachments: [],
+          },
+        ],
+      });
+      const remoteEvent = await pool.query<{ id: string }>(
+        "SELECT id FROM outbox_events WHERE user_id = $1 AND event_type = 'source.item.revision.created.v1' ORDER BY occurred_at DESC, id DESC LIMIT 1",
+        [userId],
+      );
+      const remoteRegistry = new ConsumerRegistry(
+        new DurableRuntimeRepository(pool),
+      );
+      registerExtractionConsumer(remoteRegistry, "remote-allowed");
+      await remoteRegistry.consume({ id: remoteEvent.rows[0]!.id });
+      assert.equal(
+        (
+          await pool.query<{ privacy_profile: string }>(
+            "SELECT privacy_profile FROM extraction_jobs WHERE user_id = $1 AND state = 'pending' ORDER BY created_at DESC LIMIT 1",
+            [userId],
+          )
+        ).rows[0]?.privacy_profile,
+        "remote-allowed",
+      );
+      await new ModelBudgetRepository(pool).setLimit({
+        id: randomUUID(),
+        userId,
+        limitAmountUsd: "10",
+        periodStart: new Date("2020-01-01T00:00:00Z"),
+        periodEnd: new Date("2099-01-01T00:00:00Z"),
+      });
+      let remoteCalls = 0;
+      const remoteRunner = new DurableExtractionRunner(
+        new ExtractionService(
+          new ModelGateway({
+            remoteConfig: loadRemoteModelConfig({
+              MODEL_REMOTE_ENABLED: "true",
+              MODEL_PROJECT_DATA_CONTROLS_CONFIRMED: "true",
+              MODEL_API_KEY: "synthetic",
+            }),
+            remote: {
+              run: async () => {
+                remoteCalls += 1;
+                return {
+                  value: { candidates: [] },
+                  inputTokens: 1,
+                  outputTokens: 1,
+                };
+              },
+            },
+            budget: new ModelBudgetRepository(pool),
+          }),
+        ),
+        extraction,
+        loader,
+      );
+      assert.equal(await remoteRunner.runOne(), "completed");
+      assert.equal(remoteCalls, 1);
+
+      await gmail.persistPage({
+        reason: "incremental",
+        messages: [
+          {
             externalId: "scanned-mail",
             historyId: "3",
             original: new TextEncoder().encode("scanned"),
@@ -304,6 +370,38 @@ test(
       await registry.consume({ id: leaseEvent.rows[0]!.id });
       const claimed = await extraction.claimNext();
       assert.ok(claimed);
+      assert.equal(claimed.attemptNumber, 1);
+      assert.notEqual(claimed.sourceItemRevisionId, revisionId);
+      await assert.rejects(
+        extraction.complete({
+          jobId: claimed.id,
+          userId,
+          candidates: [
+            {
+              id: randomUUID(),
+              title: "invalid cross-revision candidate",
+              amount: { amount: "1", currency: "COP" },
+              due: {
+                kind: "civil_date",
+                date: "2026-10-15",
+                timeZone: "America/Bogota",
+              },
+              evidence: [
+                {
+                  id: randomUUID(),
+                  kind: "email_body_fragment",
+                  sourceItemRevisionId: revisionId,
+                  startOffset: 0,
+                  endOffset: 1,
+                  quote: "F",
+                  contentSha256: "a".repeat(64),
+                },
+              ],
+            },
+          ],
+        }),
+        /revision does not match job/,
+      );
       const leaseJob = { id: claimed.id };
       await pool.query(
         "UPDATE extraction_jobs SET state = 'running', claimed_at = now() - interval '2 minutes', completed_at = NULL WHERE id = $1",
@@ -320,6 +418,21 @@ test(
         "lease_expired",
       );
       assert.equal(await extraction.claimNext(), null);
+
+      const completedJob = await pool.query<{ id: string; state: string }>(
+        "SELECT id, state FROM extraction_jobs WHERE user_id = $1 AND state = 'completed' ORDER BY created_at LIMIT 1",
+        [userId],
+      );
+      await extraction.fail(completedJob.rows[0]!.id, userId, "late_failure");
+      assert.equal(
+        (
+          await pool.query<{ state: string }>(
+            "SELECT state FROM extraction_jobs WHERE id = $1",
+            [completedJob.rows[0]!.id],
+          )
+        ).rows[0]?.state,
+        "completed",
+      );
     } finally {
       await pool.end();
     }
