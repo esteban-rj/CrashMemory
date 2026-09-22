@@ -271,7 +271,7 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
 | V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
 | V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).               |
-| V05     | ModelGateway, presupuesto y worker de extracción          | Integrada en esta entrega; validación real pendiente. |
+| V05     | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
 | V06     | Reconciliación                                            | Pendiente.                                            |
 | V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).               |
 | V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                            |

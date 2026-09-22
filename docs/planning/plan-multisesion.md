@@ -41,6 +41,8 @@ La selección mantiene la guía documentada en la revisión inicial: Luna para t
 
 I00.1 usa `gpt-5.6-sol` / `high` para recuperar la integración V07. Los conflictos repetidos de I00 en archivos compartidos y el fallo de aplicación del último parche justifican esta escalada concreta. Al no poder reanudar la sesión original I00 por el límite de hilos del cliente, I00.1 continúa la integración V05 en la misma rama, worktree y unidad de conteo, con cupo reservado por raíz. No añade una undécima entrega funcional ni altera V01–V10.
 
+Para el cierre documental de V05, I00.1 tampoco pudo reactivarse por ese límite de hilos. Root tomó el bloqueo de integración y autorizó excepcionalmente a la autora de V05 a avanzar por fast-forward el candidato ya revisado, sin nueva rama, sesión ni cambio funcional.
+
 Si un fallo reproducible requiere más capacidad, documentar intentos y escalar esa sesión, sin crear por defecto otra sesión revisora. Si el alcance obliga a dividir una entrega, actualizar el conteo y las dependencias; no anunciar que siguen siendo diez mientras se crean sesiones adicionales.
 
 ## 3. Reglas de trabajo
