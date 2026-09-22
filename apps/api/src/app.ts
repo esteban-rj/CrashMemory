@@ -86,6 +86,7 @@ export function buildApp(
       options.auth,
       options.objectStorage,
       options.lifecycleJournal,
+      options.gmail,
     );
   } else {
     app.post("/api/v1/auth/login", async (request, reply) =>

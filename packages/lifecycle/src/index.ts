@@ -30,6 +30,18 @@ export interface DeletionJournal {
   /** Must fsync before resolving; stale intents are conservatively replayed. */
   append(entry: Record<string, unknown>): Promise<void>;
 }
+export interface GmailRemoteRevoker {
+  revoke(input: {
+    userId: string;
+    connectionId: string;
+    encrypted: {
+      keyVersion: string;
+      iv: string;
+      ciphertext: string;
+      authTag: string;
+    };
+  }): Promise<"revoked" | "failed">;
+}
 
 /** Append-only AES-256-GCM journal, deliberately separate from PostgreSQL dumps. */
 export class EncryptedFileDeletionJournal implements DeletionJournal {
@@ -131,24 +143,37 @@ export class LifecycleService {
     private readonly pool: Pool,
     private readonly storage?: ObjectStorage,
     private readonly journal?: DeletionJournal,
+    private readonly gmailRevoker?: GmailRemoteRevoker,
   ) {}
   private requireJournal(): DeletionJournal {
     if (!this.journal) throw new LifecycleJournalRequiredError();
     return this.journal;
   }
 
+  private async lockUser(client: PoolClient, userId: string): Promise<void> {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))",
+      [`lifecycle:user:${userId}`],
+    );
+  }
+
   async disconnectGmail(input: {
     userId: string;
     connectionId: string;
     actorSessionId: string;
-  }): Promise<void> {
+  }): Promise<"revoked" | "not_configured" | "failed"> {
     this.requireJournal();
-    await inTransaction(this.pool, async (client) => {
+    const credential = await inTransaction(this.pool, async (client) => {
+      await this.lockUser(client, input.userId);
       const connection = await client.query<{ id: string }>(
         `SELECT id FROM source_connections WHERE id = $1 AND user_id = $2 AND provider = 'gmail' FOR UPDATE`,
         [input.connectionId, input.userId],
       );
       if (connection.rowCount !== 1) throw new LifecycleNotFoundError();
+      const stored = await client.query<Record<string, unknown>>(
+        "SELECT key_version, iv, ciphertext, auth_tag FROM encrypted_credentials WHERE user_id = $1 AND source_connection_id = $2 FOR UPDATE",
+        [input.userId, input.connectionId],
+      );
       // Invalidates any callback issued before disconnect. A newly initiated
       // OAuth consent creates a new nonce and may explicitly reconnect later.
       await client.query(
@@ -176,7 +201,25 @@ export class LifecycleService {
          VALUES ($1,$2,$3,'gmail.disconnected','source_connection',$4)`,
         [randomUUID(), input.userId, input.actorSessionId, input.connectionId],
       );
+      if (stored.rowCount !== 1) return null;
+      const row = stored.rows[0]!;
+      return {
+        keyVersion: String(row.key_version),
+        iv: Buffer.from(row.iv as Buffer).toString("base64"),
+        ciphertext: Buffer.from(row.ciphertext as Buffer).toString("base64"),
+        authTag: Buffer.from(row.auth_tag as Buffer).toString("base64"),
+      };
     });
+    if (!credential || !this.gmailRevoker) return "not_configured";
+    try {
+      return await this.gmailRevoker.revoke({
+        userId: input.userId,
+        connectionId: input.connectionId,
+        encrypted: credential,
+      });
+    } catch {
+      return "failed";
+    }
   }
 
   async unlinkTelegram(input: {
@@ -185,6 +228,7 @@ export class LifecycleService {
   }): Promise<number> {
     const journal = this.requireJournal();
     return inTransaction(this.pool, async (client) => {
+      await this.lockUser(client, input.userId);
       await addTombstone(
         client,
         {
@@ -247,6 +291,7 @@ export class LifecycleService {
     if (!this.storage) throw new LifecycleStorageRequiredError();
     const journal = this.requireJournal();
     const result = await inTransaction(this.pool, async (client) => {
+      await this.lockUser(client, input.userId);
       await client.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))",
         [`lifecycle:gmail:${input.userId}:${input.connectionId}`],
@@ -467,6 +512,7 @@ export class LifecycleService {
     if (!this.storage) throw new LifecycleStorageRequiredError();
     const journal = this.requireJournal();
     const result = await inTransaction(this.pool, async (client) => {
+      await this.lockUser(client, input.userId);
       await addTombstone(
         client,
         {
@@ -507,6 +553,7 @@ export class LifecycleService {
   }): Promise<void> {
     const journal = this.requireJournal();
     await inTransaction(this.pool, async (client) => {
+      await this.lockUser(client, input.userId);
       const obligation = await client.query(
         "SELECT id FROM obligations WHERE id = $1 AND user_id = $2 FOR UPDATE",
         [input.obligationId, input.userId],

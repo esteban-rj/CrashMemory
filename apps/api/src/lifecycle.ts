@@ -7,6 +7,7 @@ import {
   LifecycleStorageRequiredError,
 } from "@crashmemory/lifecycle";
 import type { ObjectStorage } from "@crashmemory/runtime";
+import type { GmailRouteConfig } from "./gmail.ts";
 import {
   isTrustedOrigin,
   resolveSession,
@@ -100,8 +101,53 @@ export function registerLifecycleRoutes(
   auth: AuthConfig,
   objectStorage?: ObjectStorage,
   journal?: import("@crashmemory/lifecycle").DeletionJournal,
+  gmail?: GmailRouteConfig,
 ): void {
-  const lifecycle = new LifecycleService(pool, objectStorage, journal);
+  const lifecycle = new LifecycleService(
+    pool,
+    objectStorage,
+    journal,
+    gmail
+      ? {
+          async revoke(input) {
+            let refreshToken: string | undefined;
+            try {
+              const parsed = JSON.parse(
+                gmail.credentialCipher.decrypt(
+                  input.encrypted,
+                  `${input.userId}:${input.connectionId}`,
+                ),
+              ) as { refreshToken?: unknown };
+              if (typeof parsed.refreshToken === "string")
+                refreshToken = parsed.refreshToken;
+            } catch {
+              return "failed" as const;
+            }
+            if (!refreshToken) return "failed" as const;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 10_000);
+            try {
+              const response = await fetch(
+                "https://oauth2.googleapis.com/revoke",
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                  },
+                  body: new URLSearchParams({ token: refreshToken }),
+                  signal: controller.signal,
+                },
+              );
+              return response.ok ? ("revoked" as const) : ("failed" as const);
+            } catch {
+              return "failed" as const;
+            } finally {
+              clearTimeout(timer);
+            }
+          },
+        }
+      : undefined,
+  );
   app.post("/api/v1/lifecycle/gmail/disconnect", async (request, reply) => {
     const access = await mutationSession(request, pool, auth);
     if ("failure" in access) {
@@ -116,13 +162,13 @@ export function registerLifecycleRoutes(
         .code(400)
         .send(error(request, "invalid_request", "connectionId is required"));
     try {
-      await lifecycle.disconnectGmail({
+      const remoteRevocation = await lifecycle.disconnectGmail({
         userId: access.session.userId,
         connectionId: body.connectionId,
         actorSessionId: access.session.id,
       });
       return reply.send({
-        data: { state: "disconnected", remoteRevocation: "not_attempted" },
+        data: { state: "disconnected", remoteRevocation },
       });
     } catch (cause) {
       return sendFailure(request, reply, cause);

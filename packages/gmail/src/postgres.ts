@@ -79,7 +79,12 @@ export class PostgresGmailPersistence implements GmailPersistence {
   private async withLifecycleLock<T>(operation: () => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     let locked = false;
+    let userLocked = false;
     try {
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 1))", [
+        `lifecycle:user:${this.userId}`,
+      ]);
+      userLocked = true;
       await client.query("SELECT pg_advisory_lock(hashtextextended($1, 1))", [
         `lifecycle:gmail:${this.userId}:${this.sourceConnectionId}`,
       ]);
@@ -90,6 +95,12 @@ export class PostgresGmailPersistence implements GmailPersistence {
         await client.query(
           "SELECT pg_advisory_unlock(hashtextextended($1, 1))",
           [`lifecycle:gmail:${this.userId}:${this.sourceConnectionId}`],
+        );
+      }
+      if (userLocked) {
+        await client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 1))",
+          [`lifecycle:user:${this.userId}`],
         );
       }
       client.release();

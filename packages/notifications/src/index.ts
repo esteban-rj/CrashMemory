@@ -432,6 +432,10 @@ export class ReminderScheduler {
       `SELECT o.id AS obligation_id, o.user_id, v.id AS obligation_version_id, v.revision
        FROM obligations o JOIN obligation_versions v ON v.id = o.current_version_id
        WHERE o.state = 'confirmed' AND o.user_id = v.user_id
+         AND NOT EXISTS (
+           SELECT 1 FROM reminders r
+           WHERE r.user_id = o.user_id AND r.obligation_version_id = v.id
+         )
        ORDER BY o.updated_at, o.id LIMIT $1`,
       [limit],
     );
