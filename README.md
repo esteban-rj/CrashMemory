@@ -213,6 +213,8 @@ TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemo
 
 Comprueba el vínculo de un solo uso, el cursor durable, intento → `sendMessage` simulado → `sent`, deduplicación de un envío confirmado y el paso de un intento interrumpido a `unknown` sin nueva llamada HTTP.
 
+Para verificar Gmail y avisos juntos, se ejecutó `pnpm check` seguido de `pnpm build` con PostgreSQL, Redis y MinIO del mismo proyecto Compose aislado. En este host se usaron `crashmemory-i001-merge`, base `crashmemory_i001` y puertos `54339`, `6399`, `9019` y `9020`; `TEST_DATABASE_URL`, `TEST_REDIS_URL` y `TEST_OBJECT_STORAGE_*` apuntaron a esos servicios. No hubo pruebas omitidas. La tabla `schema_migrations` contenía `0004_v04_gmail_sync` y `0006_v07_telegram_reminders`; una ejecución posterior de `pnpm db:migrate` respondió `Database is up to date`.
+
 ## Límites actuales
 
 V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08/V10 completarán el recorrido y V09 define borrado y barreras contra resurrección.
