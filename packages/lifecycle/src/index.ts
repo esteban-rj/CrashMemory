@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createCipheriv, randomBytes } from "node:crypto";
-import { mkdir, open } from "node:fs/promises";
+import { mkdir, open, rmdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Pool, PoolClient } from "pg";
 import { inTransaction } from "@crashmemory/db";
 import type { ObjectStorage } from "@crashmemory/runtime";
@@ -55,24 +56,98 @@ export class EncryptedFileDeletionJournal implements DeletionJournal {
     if (this.key.byteLength !== 32)
       throw new Error("Lifecycle journal key must be 32 bytes base64");
   }
-  async append(entry: Record<string, unknown>): Promise<void> {
+  private line(entry: Record<string, unknown>): string {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, iv);
     const encrypted = Buffer.concat([
       cipher.update(JSON.stringify(entry), "utf8"),
       cipher.final(),
     ]);
-    const line =
+    return (
       JSON.stringify({
         v: 1,
         iv: iv.toString("base64"),
         tag: cipher.getAuthTag().toString("base64"),
         data: encrypted.toString("base64"),
-      }) + "\n";
+      }) + "\n"
+    );
+  }
+
+  /** Creates a durable identity before even an empty backup is allowed. */
+  async initialize(): Promise<void> {
+    await this.withFileLock(() => this.initializeLocked());
+  }
+
+  private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
     await mkdir(dirname(this.path), { recursive: true });
+    const lockPath = `${this.path}.lock`;
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      try {
+        await mkdir(lockPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (Date.now() > deadline)
+          throw new Error(
+            "Lifecycle journal is locked; inspect stale lock before retrying",
+            { cause: error },
+          );
+        await delay(10);
+      }
+    }
+    try {
+      return await operation();
+    } finally {
+      await rmdir(lockPath);
+    }
+  }
+
+  private async initializeLocked(): Promise<void> {
+    const existed = await stat(this.path).then(
+      () => true,
+      () => false,
+    );
+    const handle = await open(this.path, "a+", 0o600);
+    try {
+      if ((await handle.stat()).size === 0) {
+        await handle.writeFile(
+          this.line({ kind: "lifecycle_journal_header", id: randomUUID() }),
+        );
+        await handle.sync();
+      }
+    } finally {
+      await handle.close();
+    }
+    if (!existed) {
+      const directory = await open(dirname(this.path), "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
+  }
+
+  async append(entry: Record<string, unknown>): Promise<void> {
+    await this.withFileLock(async () => {
+      await this.initializeLocked();
+      await this.appendLocked(entry);
+    });
+  }
+
+  private async appendLocked(entry: Record<string, unknown>): Promise<void> {
     const handle = await open(this.path, "a", 0o600);
     try {
-      await handle.write(line);
+      const line = this.line(entry);
+      const bytes = Buffer.from(line);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const result = await handle.write(bytes, offset, bytes.length - offset);
+        if (result.bytesWritten === 0)
+          throw new Error("Lifecycle journal short write");
+        offset += result.bytesWritten;
+      }
       await handle.sync();
     } finally {
       await handle.close();
@@ -98,6 +173,7 @@ async function addTombstone(
     userId: string;
     scope:
       | "gmail_connection"
+      | "gmail_disconnect"
       | "gmail_message"
       | "telegram_link"
       | "obligation"
@@ -163,7 +239,7 @@ export class LifecycleService {
     connectionId: string;
     actorSessionId?: string;
   }): Promise<"revoked" | "not_configured" | "failed"> {
-    this.requireJournal();
+    const journal = this.requireJournal();
     const credential = await inTransaction(this.pool, async (client) => {
       await this.lockUser(client, input.userId);
       const connection = await client.query<{ id: string }>(
@@ -171,6 +247,23 @@ export class LifecycleService {
         [input.connectionId, input.userId],
       );
       if (connection.rowCount !== 1) throw new LifecycleNotFoundError();
+      await addTombstone(
+        client,
+        {
+          tombstoneKey: key(
+            input.userId,
+            "gmail",
+            "disconnect",
+            input.connectionId,
+          ),
+          userId: input.userId,
+          scope: "gmail_disconnect",
+          provider: "gmail",
+          sourceConnectionId: input.connectionId,
+          reason: "user_disconnected",
+        },
+        journal,
+      );
       const stored = await client.query<Record<string, unknown>>(
         "SELECT key_version, iv, ciphertext, auth_tag FROM encrypted_credentials WHERE user_id = $1 AND source_connection_id = $2 FOR UPDATE",
         [input.userId, input.connectionId],
@@ -654,6 +747,68 @@ export class LifecycleService {
       }
     }
     return pending;
+  }
+
+  /** Replays committed object deletions after a MinIO outage or process crash. */
+  async drainObjectCleanup(
+    limit = 100,
+  ): Promise<{ removed: number; pending: number; skippedLive: number }> {
+    if (!this.storage) throw new LifecycleStorageRequiredError();
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
+      throw new Error("Object cleanup limit must be from 1 to 10000");
+    const pending = await this.pool.query<{
+      storage_key: string;
+      user_id: string;
+    }>(
+      "SELECT storage_key,user_id FROM lifecycle_object_cleanup ORDER BY requested_at,storage_key LIMIT $1",
+      [limit],
+    );
+    let removed = 0,
+      skippedLive = 0;
+    for (const row of pending.rows) {
+      const outcome = await inTransaction(this.pool, async (client) => {
+        await this.lockUser(client, row.user_id);
+        const intent = await client.query(
+          "SELECT 1 FROM lifecycle_object_cleanup WHERE storage_key=$1 AND user_id=$2 FOR UPDATE SKIP LOCKED",
+          [row.storage_key, row.user_id],
+        );
+        if (!intent.rowCount) return "skipped" as const;
+        const live = await client.query(
+          "SELECT 1 FROM blobs WHERE storage_key=$1",
+          [row.storage_key],
+        );
+        if (live.rowCount) return "live" as const;
+        try {
+          await this.storage!.remove(row.storage_key);
+          await client.query(
+            "DELETE FROM lifecycle_object_cleanup WHERE storage_key=$1 AND user_id=$2",
+            [row.storage_key, row.user_id],
+          );
+          return "removed" as const;
+        } catch (error) {
+          await client.query(
+            `UPDATE lifecycle_object_cleanup SET attempts=attempts+1,last_error_code=$3
+             WHERE storage_key=$1 AND user_id=$2`,
+            [
+              row.storage_key,
+              row.user_id,
+              error instanceof Error ? error.name : "object_delete_failed",
+            ],
+          );
+          return "failed" as const;
+        }
+      });
+      if (outcome === "removed") removed += 1;
+      if (outcome === "live") skippedLive += 1;
+    }
+    const remaining = await this.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM lifecycle_object_cleanup",
+    );
+    return {
+      removed,
+      pending: Number(remaining.rows[0]?.count ?? 0),
+      skippedLive,
+    };
   }
 
   async exportUser(

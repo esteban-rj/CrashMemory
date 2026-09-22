@@ -432,12 +432,13 @@ export class ReminderScheduler {
       `SELECT o.id AS obligation_id, o.user_id, v.id AS obligation_version_id, v.revision
        FROM obligations o JOIN obligation_versions v ON v.id = o.current_version_id
        WHERE o.state = 'confirmed' AND o.user_id = v.user_id
+         AND COALESCE(v.due_at, v.due_date::timestamp AT TIME ZONE v.time_zone) > $2
          AND NOT EXISTS (
            SELECT 1 FROM reminders r
            WHERE r.user_id = o.user_id AND r.obligation_version_id = v.id
          )
        ORDER BY o.updated_at, o.id LIMIT $1`,
-      [limit],
+      [limit, now],
     );
     for (const version of versions.rows) {
       await this.scheduleForVersion(
@@ -531,9 +532,30 @@ export class NotificationDispatcher {
     private readonly pool: Pool,
     private readonly cipher: CredentialCipher,
     private readonly provider: TelegramProvider,
+    private readonly automaticDeliveryEnabled = true,
   ) {}
 
   async deliver(
+    event: Extract<OutboxEvent, { type: "reminder.delivery.requested.v1" }>,
+  ): Promise<void> {
+    // A queued outbox event can survive a policy change. The policy is checked
+    // at the last external-send boundary as well as at scheduling time.
+    if (!this.automaticDeliveryEnabled) return;
+    const lock = await this.pool.connect();
+    try {
+      await lock.query("SELECT pg_advisory_lock(hashtextextended($1, 1))", [
+        `lifecycle:user:${event.userId}`,
+      ]);
+      await this.deliverLocked(event);
+    } finally {
+      await lock.query("SELECT pg_advisory_unlock(hashtextextended($1, 1))", [
+        `lifecycle:user:${event.userId}`,
+      ]);
+      lock.release();
+    }
+  }
+
+  private async deliverLocked(
     event: Extract<OutboxEvent, { type: "reminder.delivery.requested.v1" }>,
   ): Promise<void> {
     const prepared = await inTransaction(this.pool, (client) =>

@@ -97,6 +97,7 @@ async function main(): Promise<void> {
         pool,
         cipher,
         new TelegramBotApiProvider(telegramToken),
+        process.env.NOTIFICATIONS_AUTOMATIC_ENABLED === "true",
       ),
     );
     const botKey = hashOpaqueToken(telegramToken);

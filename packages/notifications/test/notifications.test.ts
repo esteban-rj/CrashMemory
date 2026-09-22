@@ -226,6 +226,21 @@ test(
       assert.deepEqual(unknown.rows, [
         { outcome: "unknown", error_code: "interrupted_after_prepare" },
       ]);
+
+      const queuedWhileDisabled = await seedReminder(pool, userId);
+      await new NotificationDispatcher(pool, cipher, provider, false).deliver(
+        deliveryEvent(userId, queuedWhileDisabled.reminderId),
+      );
+      assert.equal(seen.length, 1);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT 1 FROM notification_delivery_attempts WHERE reminder_id=$1",
+            [queuedWhileDisabled.reminderId],
+          )
+        ).rowCount,
+        0,
+      );
     } finally {
       await pool.query("DELETE FROM users WHERE id = $1", [userId]);
       await pool.end();
@@ -313,6 +328,55 @@ test(
       );
     } finally {
       await pool.query("DELETE FROM users WHERE id = $1", [userId]);
+      await pool.end();
+    }
+  },
+);
+
+test(
+  "explicit backfill advances beyond 100 expired obligations without a historical burst",
+  { skip: !databaseUrl },
+  async () => {
+    const pool = createPool(databaseUrl!);
+    await migrate(pool);
+    const userId = await seedUser(pool);
+    const now = new Date();
+    try {
+      for (let index = 0; index < 105; index += 1) {
+        const obligationId = randomUUID(),
+          versionId = randomUUID();
+        await pool.query(
+          "INSERT INTO obligations(id,user_id,state) VALUES ($1,$2,'confirmed')",
+          [obligationId, userId],
+        );
+        await pool.query(
+          "INSERT INTO obligation_versions(id,user_id,obligation_id,revision,title,due_kind,due_at,time_zone) VALUES ($1,$2,$3,1,'Synthetic backfill','instant',$4,'America/Bogota')",
+          [
+            versionId,
+            userId,
+            obligationId,
+            new Date(now.getTime() + (index < 102 ? -5 : 5) * 86_400_000),
+          ],
+        );
+        await pool.query(
+          "UPDATE obligations SET current_version_id=$1 WHERE id=$2",
+          [versionId, obligationId],
+        );
+      }
+      const scheduler = new ReminderScheduler(pool, undefined, true);
+      assert.equal(await scheduler.backfillConfirmed(now, 100), 3);
+      assert.equal(await scheduler.backfillConfirmed(now, 100), 0);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS count FROM reminders WHERE user_id=$1",
+            [userId],
+          )
+        ).rows[0].count,
+        6,
+      );
+    } finally {
+      await pool.query("DELETE FROM users WHERE id=$1", [userId]);
       await pool.end();
     }
   },

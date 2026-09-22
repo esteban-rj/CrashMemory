@@ -4,11 +4,9 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
+import { open, readFile, rename } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Pool } from "pg";
 import type { ObjectStorage } from "@crashmemory/runtime";
 import {
@@ -17,14 +15,83 @@ import {
   type DeletionJournal,
 } from "./index.ts";
 
-const execute = promisify(execFile);
 const format = "crashmemory-lifecycle-backup-v1";
+const scopes = new Set([
+  "account",
+  "gmail_connection",
+  "gmail_disconnect",
+  "gmail_message",
+  "obligation",
+  "telegram_link",
+]);
+
+export interface PostgresTools {
+  /** PostgreSQL tools from the named container; localhost is its own DB port. */
+  container?: string;
+  dockerContext?: string;
+}
+
+async function runPgTool(
+  tool: "pg_dump" | "pg_restore",
+  args: string[],
+  databaseUrl: string,
+  options: PostgresTools,
+  input?: Buffer,
+): Promise<Buffer> {
+  const url = new URL(databaseUrl);
+  if (options.container) {
+    url.hostname = "127.0.0.1";
+    url.port = "5432";
+  }
+  const command = options.container ? "docker" : tool;
+  const commandArgs = options.container
+    ? [
+        ...(options.dockerContext ? ["--context", options.dockerContext] : []),
+        "exec",
+        "-i",
+        options.container,
+        tool,
+        ...args,
+        "--dbname",
+        url.toString(),
+      ]
+    : [...args, "--dbname", databaseUrl];
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, commandArgs, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const chunks: Buffer[] = [];
+    const errors: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0
+        ? resolve(Buffer.concat(chunks))
+        : reject(
+            new Error(
+              `${tool} failed (${code}): ${Buffer.concat(errors).toString("utf8").slice(0, 2000)}`,
+            ),
+          ),
+    );
+    child.stdin.on("error", reject);
+    child.stdin.end(input);
+  });
+}
 
 type ArchivePayload = {
   format: typeof format;
   createdAt: string;
   postgresDump: string;
-  objects: Array<{ key: string; sha256: string; bytes: string }>;
+  postgresSha256: string;
+  journalBytes: number;
+  journalSha256: string;
+  objects: Array<{
+    key: string;
+    sha256: string;
+    contentType: string;
+    bytes: string;
+  }>;
 };
 
 function keyFromBase64(value: string): Buffer {
@@ -44,17 +111,25 @@ export async function readEncryptedJournal(
 ): Promise<Array<Record<string, unknown>>> {
   const key = keyFromBase64(keyBase64);
   const content = await readFile(path, "utf8");
-  return content
+  if (content && !content.endsWith("\n"))
+    throw new Error("Lifecycle journal has a partial final line");
+  const decoded = content
     .split("\n")
-    .filter(Boolean)
+    .slice(0, -1)
     .map((line) => {
+      if (!line) throw new Error("Lifecycle journal has an empty line");
       const record = JSON.parse(line) as {
         v: number;
         iv: string;
         tag: string;
         data: string;
       };
-      if (record.v !== 1)
+      if (
+        record.v !== 1 ||
+        typeof record.iv !== "string" ||
+        typeof record.tag !== "string" ||
+        typeof record.data !== "string"
+      )
         throw new Error("Unsupported lifecycle journal version");
       const decipher = createDecipheriv(
         "aes-256-gcm",
@@ -62,13 +137,62 @@ export async function readEncryptedJournal(
         Buffer.from(record.iv, "base64"),
       );
       decipher.setAuthTag(Buffer.from(record.tag, "base64"));
-      return JSON.parse(
+      const entry = JSON.parse(
         Buffer.concat([
           decipher.update(Buffer.from(record.data, "base64")),
           decipher.final(),
         ]).toString("utf8"),
       ) as Record<string, unknown>;
+      return entry;
     });
+  const header = decoded.shift();
+  if (
+    header?.kind !== "lifecycle_journal_header" ||
+    typeof header.id !== "string" ||
+    !/^[0-9a-f-]{36}$/i.test(header.id)
+  )
+    throw new Error("Lifecycle journal identity is missing");
+  for (const entry of decoded) validateJournalEntry(entry);
+  return decoded;
+}
+
+function validateJournalEntry(entry: Record<string, unknown>): void {
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (
+    !uuid.test(String(entry.userId ?? "")) ||
+    !scopes.has(String(entry.scope ?? "")) ||
+    typeof entry.tombstoneKey !== "string" ||
+    entry.tombstoneKey.length < 1 ||
+    entry.tombstoneKey.length > 1024 ||
+    typeof entry.reason !== "string" ||
+    entry.reason.length < 1 ||
+    entry.reason.length > 100
+  )
+    throw new Error("Lifecycle journal entry is invalid");
+  if (
+    ["gmail_connection", "gmail_disconnect"].includes(String(entry.scope)) &&
+    !uuid.test(String(entry.sourceConnectionId ?? ""))
+  )
+    throw new Error("Lifecycle journal connection is invalid");
+  if (
+    entry.scope === "gmail_message" &&
+    (typeof entry.externalAccountId !== "string" ||
+      !entry.externalAccountId ||
+      typeof entry.externalMessageId !== "string" ||
+      !entry.externalMessageId)
+  )
+    throw new Error("Lifecycle journal message is invalid");
+  if (
+    entry.scope === "gmail_message" &&
+    !["source_deleted", "knowledge_deleted"].includes(String(entry.reason))
+  )
+    throw new Error("Lifecycle journal message reason is invalid");
+  if (
+    entry.scope === "obligation" &&
+    !uuid.test(entry.tombstoneKey.split(":").at(-1) ?? "")
+  )
+    throw new Error("Lifecycle journal obligation is invalid");
 }
 
 export class LifecycleBackupService {
@@ -82,66 +206,102 @@ export class LifecycleBackupService {
     outputPath: string;
     encryptionKeyBase64: string;
     journalPath: string;
+    journalKeyBase64: string;
+    postgresTools?: PostgresTools;
   }): Promise<{ objectCount: number }> {
-    // Readability is an explicit precondition: the live journal is retained
-    // outside the archive and restored/replayed from its latest copy.
-    await readFile(input.journalPath);
-    const work = await mkdtemp(join(tmpdir(), "crashmemory-backup-"));
-    const dumpPath = join(work, "postgres.dump");
-    try {
-      await execute("pg_dump", [
+    await new EncryptedFileDeletionJournal(
+      input.journalPath,
+      input.journalKeyBase64,
+    ).initialize();
+    const journal = await readEncryptedJournal(
+      input.journalPath,
+      input.journalKeyBase64,
+    );
+    const journalBytes = await readFile(input.journalPath);
+    const journalKeys = new Set(
+      journal.map((entry) => String(entry.tombstoneKey)),
+    );
+    const barriers = await this.pool.query<{ tombstone_key: string }>(
+      "SELECT tombstone_key FROM lifecycle_tombstones",
+    );
+    if (barriers.rows.some((row) => !journalKeys.has(row.tombstone_key)))
+      throw new Error(
+        "Current journal does not cover PostgreSQL deletion barriers",
+      );
+    const dump = await runPgTool(
+      "pg_dump",
+      [
         "--format=custom",
         "--no-owner",
         "--no-acl",
         "--exclude-table-data=lifecycle_tombstones",
         "--exclude-table-data=lifecycle_object_cleanup",
-        "--file",
-        dumpPath,
-        input.databaseUrl,
-      ]);
-      const rows = await this.pool.query<{
-        storage_key: string;
-        content_sha256: string;
-      }>("SELECT storage_key, content_sha256 FROM blobs ORDER BY storage_key");
-      const objects = await Promise.all(
-        rows.rows.map(async (row) => {
-          const bytes = await this.storage.get(row.storage_key);
-          if (digest(bytes) !== row.content_sha256)
-            throw new Error("Object hash does not match PostgreSQL catalog");
-          return {
-            key: row.storage_key,
-            sha256: row.content_sha256,
-            bytes: Buffer.from(bytes).toString("base64"),
-          };
-        }),
-      );
-      const payload: ArchivePayload = {
-        format,
-        createdAt: new Date().toISOString(),
-        postgresDump: (await readFile(dumpPath)).toString("base64"),
-        objects,
-      };
-      const key = keyFromBase64(input.encryptionKeyBase64);
-      const iv = randomBytes(12);
-      const cipher = createCipheriv("aes-256-gcm", key, iv);
-      const encrypted = Buffer.concat([
-        cipher.update(JSON.stringify(payload), "utf8"),
-        cipher.final(),
-      ]);
-      await writeFile(
-        input.outputPath,
-        JSON.stringify({
-          format,
-          iv: iv.toString("base64"),
-          tag: cipher.getAuthTag().toString("base64"),
-          ciphertext: encrypted.toString("base64"),
-        }),
-        { mode: 0o600 },
-      );
-      return { objectCount: objects.length };
+      ],
+      input.databaseUrl,
+      input.postgresTools ?? {},
+    );
+    const rows = await this.pool.query<{
+      storage_key: string;
+      content_sha256: string;
+      content_type: string;
+      byte_size: number;
+    }>(
+      "SELECT storage_key, content_sha256, content_type, byte_size FROM blobs ORDER BY storage_key",
+    );
+    const objects = await Promise.all(
+      rows.rows.map(async (row) => {
+        const bytes = await this.storage.get(row.storage_key);
+        if (
+          digest(bytes) !== row.content_sha256 ||
+          bytes.byteLength !== Number(row.byte_size)
+        )
+          throw new Error("Object hash does not match PostgreSQL catalog");
+        return {
+          key: row.storage_key,
+          sha256: row.content_sha256,
+          contentType: row.content_type,
+          bytes: Buffer.from(bytes).toString("base64"),
+        };
+      }),
+    );
+    const payload: ArchivePayload = {
+      format,
+      createdAt: new Date().toISOString(),
+      postgresDump: dump.toString("base64"),
+      postgresSha256: digest(dump),
+      journalBytes: journalBytes.length,
+      journalSha256: digest(journalBytes),
+      objects,
+    };
+    const key = keyFromBase64(input.encryptionKeyBase64);
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const encrypted = Buffer.concat([
+      cipher.update(JSON.stringify(payload), "utf8"),
+      cipher.final(),
+    ]);
+    const output = JSON.stringify({
+      format,
+      iv: iv.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+      ciphertext: encrypted.toString("base64"),
+    });
+    const temporary = `${input.outputPath}.partial-${process.pid}`;
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      await file.writeFile(output);
+      await file.sync();
     } finally {
-      await rm(work, { recursive: true, force: true });
+      await file.close();
     }
+    await rename(temporary, input.outputPath);
+    const directory = await open(dirname(input.outputPath), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+    return { objectCount: objects.length };
   }
 
   async restore(input: {
@@ -150,7 +310,15 @@ export class LifecycleBackupService {
     encryptionKeyBase64: string;
     journalPath: string;
     journalKeyBase64: string;
+    postgresTools?: PostgresTools;
   }): Promise<{ restoredObjects: number; replayedDeletes: number }> {
+    // A missing, partial or unauthentic current journal fails before touching
+    // either destination. An old archive is never an authority for deletions.
+    const journal = await readEncryptedJournal(
+      input.journalPath,
+      input.journalKeyBase64,
+    );
+    const currentJournal = await readFile(input.journalPath);
     const envelope = JSON.parse(await readFile(input.archivePath, "utf8")) as {
       format: string;
       iv: string;
@@ -171,40 +339,61 @@ export class LifecycleBackupService {
         decipher.final(),
       ]).toString("utf8"),
     ) as ArchivePayload;
-    if (payload.format !== format) throw new Error("Backup payload is invalid");
-    const work = await mkdtemp(join(tmpdir(), "crashmemory-restore-"));
-    try {
-      const dumpPath = join(work, "postgres.dump");
-      await writeFile(dumpPath, Buffer.from(payload.postgresDump, "base64"), {
-        mode: 0o600,
-      });
-      await execute("pg_restore", [
-        "--no-owner",
-        "--no-acl",
-        "--single-transaction",
-        "--dbname",
-        input.databaseUrl,
-        dumpPath,
-      ]);
-      for (const object of payload.objects) {
-        const bytes = Buffer.from(object.bytes, "base64");
-        if (digest(bytes) !== object.sha256)
-          throw new Error("Backup object hash is invalid");
-        await this.storage.putIfAbsent(
-          object.key,
-          bytes,
-          "application/octet-stream",
-        );
-      }
-      const journal = await readEncryptedJournal(
-        input.journalPath,
-        input.journalKeyBase64,
-      );
-      const replayedDeletes = await this.replayJournal(journal);
-      return { restoredObjects: payload.objects.length, replayedDeletes };
-    } finally {
-      await rm(work, { recursive: true, force: true });
+    if (
+      payload.format !== format ||
+      !Array.isArray(payload.objects) ||
+      typeof payload.postgresDump !== "string" ||
+      typeof payload.postgresSha256 !== "string"
+    )
+      throw new Error("Backup payload is invalid");
+    if (
+      !Number.isSafeInteger(payload.journalBytes) ||
+      payload.journalBytes < 0 ||
+      typeof payload.journalSha256 !== "string" ||
+      currentJournal.length < payload.journalBytes ||
+      digest(currentJournal.subarray(0, payload.journalBytes)) !==
+        payload.journalSha256
+    )
+      throw new Error("Current journal does not extend the backup journal");
+    const dump = Buffer.from(payload.postgresDump, "base64");
+    if (digest(dump) !== payload.postgresSha256)
+      throw new Error("Backup PostgreSQL hash is invalid");
+    const seen = new Set<string>();
+    for (const object of payload.objects) {
+      if (
+        !object ||
+        typeof object.key !== "string" ||
+        !/^users\/[0-9a-f-]+\/blobs\/[0-9a-f-]+$/i.test(object.key) ||
+        seen.has(object.key) ||
+        typeof object.sha256 !== "string" ||
+        typeof object.bytes !== "string" ||
+        typeof object.contentType !== "string" ||
+        digest(Buffer.from(object.bytes, "base64")) !== object.sha256
+      )
+        throw new Error("Backup object catalog is invalid");
+      seen.add(object.key);
     }
+    const existing = await this.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S')`,
+    );
+    if (Number(existing.rows[0]?.count ?? 0) !== 0)
+      throw new Error("Restore requires a schema-empty PostgreSQL database");
+    if (!(await this.storage.isEmpty()))
+      throw new Error("Restore requires an empty object bucket");
+    await runPgTool(
+      "pg_restore",
+      ["--no-owner", "--no-acl", "--exit-on-error", "--single-transaction"],
+      input.databaseUrl,
+      input.postgresTools ?? {},
+      dump,
+    );
+    for (const object of payload.objects) {
+      const bytes = Buffer.from(object.bytes, "base64");
+      await this.storage.putIfAbsent(object.key, bytes, object.contentType);
+    }
+    const replayedDeletes = await this.replayJournal(journal);
+    return { restoredObjects: payload.objects.length, replayedDeletes };
   }
 
   private async replayJournal(
@@ -214,42 +403,64 @@ export class LifecycleBackupService {
     const service = new LifecycleService(this.pool, this.storage, journal);
     let applied = 0;
     for (const entry of entries) {
-      const userId = typeof entry.userId === "string" ? entry.userId : null;
-      if (!userId || typeof entry.scope !== "string") continue;
+      validateJournalEntry(entry);
+      const userId = String(entry.userId);
+      const scope = String(entry.scope);
+      // Persist every barrier, including targets created and deleted after
+      // the archive. A missing row cannot justify dropping a delete intent.
+      await this.pool.query(
+        `INSERT INTO lifecycle_tombstones(id,tombstone_key,user_id,scope,provider,external_account_id,source_connection_id,external_message_id,reason)
+         VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (tombstone_key) DO NOTHING`,
+        [
+          entry.tombstoneKey,
+          userId,
+          scope,
+          entry.provider ?? null,
+          entry.externalAccountId ?? null,
+          entry.sourceConnectionId ?? null,
+          entry.externalMessageId ?? null,
+          entry.reason,
+        ],
+      );
       try {
-        if (entry.scope === "account") await service.deleteAccount({ userId });
-        else if (
-          entry.scope === "gmail_connection" &&
-          typeof entry.sourceConnectionId === "string"
-        )
+        if (scope === "account") await service.deleteAccount({ userId });
+        else if (scope === "gmail_disconnect")
+          await service.disconnectGmail({
+            userId,
+            connectionId: String(entry.sourceConnectionId),
+          });
+        else if (scope === "gmail_connection")
           await service.deleteSourceConnection({
             userId,
-            connectionId: entry.sourceConnectionId,
-            actorSessionId: undefined as never,
+            connectionId: String(entry.sourceConnectionId),
           });
         else if (
-          entry.scope === "gmail_message" &&
-          typeof entry.sourceConnectionId === "string" &&
-          typeof entry.externalMessageId === "string"
-        )
-          await service.deleteSourceItem({
-            userId,
-            connectionId: entry.sourceConnectionId,
-            externalMessageId: entry.externalMessageId,
-            actorSessionId: undefined as never,
-          });
-        else if (
-          entry.scope === "obligation" &&
-          typeof entry.tombstoneKey === "string"
+          scope === "gmail_message" &&
+          entry.reason === "source_deleted"
         ) {
-          const obligationId = entry.tombstoneKey.split(":").at(-1);
-          if (obligationId)
-            await service.deleteObligation({
+          const connection = await this.pool.query<{ id: string }>(
+            `SELECT id FROM source_connections WHERE user_id=$1 AND provider='gmail'
+             AND external_account_id=$2 ORDER BY created_at LIMIT 1`,
+            [userId, entry.externalAccountId],
+          );
+          if (connection.rows[0])
+            await service.deleteSourceItem({
               userId,
-              obligationId,
-              actorSessionId: undefined as never,
+              connectionId: connection.rows[0].id,
+              externalMessageId: String(entry.externalMessageId),
             });
-        } else continue;
+        } else if (scope === "obligation")
+          await service.deleteObligation({
+            userId,
+            obligationId: String(entry.tombstoneKey).split(":").at(-1)!,
+          });
+        else if (scope === "telegram_link") {
+          const exists = await this.pool.query(
+            "SELECT 1 FROM users WHERE id=$1",
+            [userId],
+          );
+          if (exists.rowCount) await service.unlinkTelegram({ userId });
+        }
         applied += 1;
       } catch (error) {
         if (

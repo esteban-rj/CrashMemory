@@ -179,6 +179,7 @@ export class GoogleGmailRemote implements GmailRemote {
       `https://gmail.googleapis.com/gmail/v1/users/me/${path}`,
       {
         ...init,
+        signal: AbortSignal.timeout(30_000),
         headers: {
           authorization: `Bearer ${this.accessToken}`,
           ...(init?.headers ?? {}),
@@ -327,6 +328,7 @@ export async function refreshGoogleAccessToken(input: {
 }): Promise<{ accessToken: string; expiresAt: Date }> {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
+    signal: AbortSignal.timeout(30_000),
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: input.clientId,

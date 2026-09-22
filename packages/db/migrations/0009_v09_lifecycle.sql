@@ -7,7 +7,7 @@ CREATE TABLE lifecycle_tombstones (
   id uuid PRIMARY KEY,
   tombstone_key text NOT NULL UNIQUE CHECK (length(tombstone_key) BETWEEN 1 AND 1024),
   user_id uuid NOT NULL,
-  scope text NOT NULL CHECK (scope IN ('gmail_connection', 'gmail_message', 'telegram_link', 'obligation', 'account')),
+  scope text NOT NULL CHECK (scope IN ('gmail_connection', 'gmail_disconnect', 'gmail_message', 'telegram_link', 'obligation', 'account')),
   provider text,
   external_account_id text,
   source_connection_id uuid,

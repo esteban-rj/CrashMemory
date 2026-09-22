@@ -223,6 +223,12 @@ importers:
         specifier: 8.16.3
         version: 8.16.3
     devDependencies:
+      '@crashmemory/gmail':
+        specifier: workspace:*
+        version: link:../gmail
+      '@crashmemory/reconciliation':
+        specifier: workspace:*
+        version: link:../reconciliation
       '@types/pg':
         specifier: 8.15.6
         version: 8.15.6

@@ -4,7 +4,7 @@ import { LifecycleBackupService } from "../backup.ts";
 
 if (process.env.LIFECYCLE_QUIESCED !== "true")
   throw new Error(
-    "LIFECYCLE_QUIESCED=true is required; restore only into a migrated empty database and bucket",
+    "LIFECYCLE_QUIESCED=true is required; restore only into a schema-empty database and empty bucket",
   );
 const required = [
   "DATABASE_URL",
@@ -24,13 +24,16 @@ const storage = new S3ObjectStorage({
   secretAccessKey: process.env.OBJECT_STORAGE_SECRET_KEY,
 });
 try {
-  await storage.ensureBucket();
   const result = await new LifecycleBackupService(pool, storage).restore({
     databaseUrl: process.env.DATABASE_URL!,
     archivePath: process.env.LIFECYCLE_BACKUP_INPUT!,
     encryptionKeyBase64: process.env.LIFECYCLE_BACKUP_KEY_BASE64!,
     journalPath: process.env.LIFECYCLE_JOURNAL_PATH!,
     journalKeyBase64: process.env.LIFECYCLE_JOURNAL_KEY_BASE64!,
+    postgresTools: {
+      container: process.env.LIFECYCLE_PG_CONTAINER,
+      dockerContext: process.env.LIFECYCLE_DOCKER_CONTEXT,
+    },
   });
   console.log(
     JSON.stringify({

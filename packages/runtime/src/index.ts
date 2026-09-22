@@ -4,6 +4,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -268,6 +269,8 @@ export interface ObjectStorage {
   ): Promise<boolean>;
   get(key: string): Promise<Uint8Array>;
   remove(key: string): Promise<void>;
+  /** Used to refuse restores into a bucket containing untracked objects. */
+  isEmpty(): Promise<boolean>;
 }
 
 export interface BlobCatalog {
@@ -561,6 +564,16 @@ export class S3ObjectStorage implements ObjectStorage {
       new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );
   }
+
+  async isEmpty(): Promise<boolean> {
+    const result = await this.client.send(
+      new ListObjectsV2Command({
+        Bucket: this.bucket,
+        MaxKeys: 1,
+      }),
+    );
+    return (result.KeyCount ?? result.Contents?.length ?? 0) === 0;
+  }
 }
 
 export class MemoryObjectStorage implements ObjectStorage {
@@ -580,5 +593,9 @@ export class MemoryObjectStorage implements ObjectStorage {
 
   async remove(key: string): Promise<void> {
     this.objects.delete(key);
+  }
+
+  async isEmpty(): Promise<boolean> {
+    return this.objects.size === 0;
   }
 }

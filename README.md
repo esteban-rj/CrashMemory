@@ -1,6 +1,6 @@
 # CrashMemory — Gmail, obligaciones con evidencia y avisos Telegram
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. V09 añade las operaciones locales de desconexión, borrado y exportación con una barrera contra replays. La web mínima sigue pendiente. El flujo se valida con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. V09 añade desconexión, borrado, exportación y restauración offline con una barrera contra replays. El flujo se valida con servicios locales y proveedores simulados.
 
 ## Reconciliación V06 y API
 
@@ -325,13 +325,39 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 
 Las mutaciones de ciclo de vida son rutas autenticadas de propietario, con `Origin` confiable, `Content-Type: application/json` y `X-CSRF-Token`. Requieren además `LIFECYCLE_JOURNAL_PATH` y una clave aleatoria de 32 bytes en `LIFECYCLE_JOURNAL_KEY_BASE64`; sin ese journal cifrado la API responde `503` antes de cambiar PostgreSQL. Cada intención se añade y sincroniza al journal antes de confirmar la transacción. El journal se conserva fuera de los dumps de PostgreSQL y se debe aplicar de forma conservadora antes de arrancar workers tras una restauración.
 
-`POST /api/v1/lifecycle/gmail/disconnect` recibe `{ "connectionId": "…" }`: elimina la credencial local, detiene la sincronización e invalida callbacks OAuth ya emitidos. No afirma revocar la concesión remota de Google. `POST /api/v1/lifecycle/telegram/unlink` revoca el receptor y cancela avisos pendientes. `DELETE /api/v1/lifecycle/sources/:connectionId`, `DELETE /api/v1/lifecycle/sources/:connectionId/items/:externalMessageId`, `DELETE /api/v1/lifecycle/obligations/:obligationId` y `DELETE /api/v1/lifecycle/account` borran respectivamente fuente, mensaje, conocimiento generado o cuenta. El borrado de fuente crea tombstones estables por usuario, cuenta Gmail y mensaje externo; por eso replays, reconexiones y colas viejas no recrean contenido borrado. Los originales se eliminan de MinIO después del commit y una falla queda registrada para limpieza posterior.
+`POST /api/v1/lifecycle/gmail/disconnect` recibe `{ "connectionId": "…" }`: elimina la credencial local, detiene la sincronización e invalida callbacks OAuth ya emitidos. La respuesta `remoteRevocation` distingue `revoked`, `failed` y `not_configured`; el estado local queda desconectado aun si Google no confirmó la revocación. `POST /api/v1/lifecycle/telegram/unlink` revoca el receptor y cancela avisos pendientes. `DELETE /api/v1/lifecycle/sources/:connectionId`, `DELETE /api/v1/lifecycle/sources/:connectionId/items/:externalMessageId`, `DELETE /api/v1/lifecycle/obligations/:obligationId` y `DELETE /api/v1/lifecycle/account` borran respectivamente fuente, mensaje, conocimiento generado o cuenta. El borrado de conocimiento conserva correos y otras obligaciones que comparten soporte; su barrera impide que un candidato tardío lo recree. Los originales sin referencias se eliminan de MinIO después del commit. Si la respuesta informa `pendingObjectCleanup > 0`, ejecute el reintento documentado abajo; este funciona incluso tras borrar la cuenta.
 
 `GET /api/v1/lifecycle/export?includeOriginals=false` produce una exportación propia con conexiones, obligaciones y evidencia. Los originales se excluyen por defecto. Con `includeOriginals=true` se codifican en base64 y cada uno está limitado a 10 MiB; los bytes preservados pueden ser una representación JSON normalizada cuando Gmail no entregó RFC822 raw, por lo que no se etiquetan como archivos `.eml` portables.
 
-Los avisos automáticos deshabilitados no se recuperan implícitamente al cambiar la variable. Tras habilitar la política y revisar su calidad, el operador puede ejecutar `NOTIFICATIONS_AUTOMATIC_ENABLED=true DATABASE_URL=… pnpm --filter @crashmemory/notifications reminders:backfill`; sólo programa tiempos futuros, usa las claves de deduplicación existentes y no envía un lote histórico inmediatamente.
+Los avisos automáticos deshabilitados no se recuperan implícitamente al cambiar la variable. Ni siquiera un evento de entrega ya encolado envía a Telegram mientras la política del worker está apagada. Tras habilitar la política y revisar su calidad, el operador puede ejecutar `NOTIFICATIONS_AUTOMATIC_ENABLED=true DATABASE_URL=… pnpm --filter @crashmemory/notifications reminders:backfill`; sólo programa tiempos futuros, usa las claves de deduplicación existentes y no envía un lote histórico inmediatamente. Las obligaciones vencidas se excluyen de la página de backfill para que más de 100 registros viejos no oculten las futuras.
 
-Para una copia local consistente, detenga API, worker y scheduler y espere su apagado antes de copiar PostgreSQL y MinIO. El scheduler espera el tick Gmail activo y el worker espera el poll Telegram activo al recibir la señal. Esta rama verifica la migración y las barreras locales; aún no incorpora un empaquetador de backup/restore que copie el journal cifrado junto con PostgreSQL y MinIO, así que no se debe declarar recuperación completa desde un backup antiguo hasta que V10 ejecute ese procedimiento extremo a extremo.
+Para una copia consistente, detenga API, worker y scheduler y espere su apagado completo antes de ejecutar el comando. El scheduler drena el tick Gmail y el worker drena el poll Telegram. `LIFECYCLE_QUIESCED=true` es una declaración del operador: el comando no detiene procesos por sí solo. Mantenga el journal cifrado **actual**, sus claves y el archivo cifrado fuera de Git y de los volúmenes que se restaurarán. El archivo contiene el esquema y datos completos de PostgreSQL (excepto los datos de `lifecycle_tombstones` y `lifecycle_object_cleanup`) y todos los originales catalogados de MinIO. La identidad y el prefijo del journal que existían al crear la copia quedan autenticados dentro del archivo; el restore exige el journal actual que extiende ese prefijo y lo valida entero antes de tocar el destino.
+
+Configure `DATABASE_URL`, `OBJECT_STORAGE_ENDPOINT`, `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_ACCESS_KEY`, `OBJECT_STORAGE_SECRET_KEY`, `LIFECYCLE_JOURNAL_PATH`, `LIFECYCLE_JOURNAL_KEY_BASE64` y `LIFECYCLE_BACKUP_KEY_BASE64` desde un archivo de entorno protegido fuera del repositorio. Ambas claves son base64 de 32 bytes y pueden ser distintas. El journal usa el directorio de bloqueo `LIFECYCLE_JOURNAL_PATH.lock` para serializar escrituras entre procesos; si un crash lo deja atrás, compruebe que no haya ningún escritor activo antes de quitar ese directorio y reintentar. En un host con binarios `pg_dump`/`pg_restore` instalados, ejecute directamente:
+
+```bash
+LIFECYCLE_QUIESCED=true LIFECYCLE_BACKUP_OUTPUT=/secure/backup.enc \
+  pnpm --filter @crashmemory/lifecycle backup
+```
+
+En este host se verificó PostgreSQL 17 dentro de Docker, sin binarios nativos: añada `LIFECYCLE_PG_CONTAINER=crashmemory-v09-recovery-postgres-1` y `LIFECYCLE_DOCKER_CONTEXT=colima-crashmemory` a ambos comandos. El contenedor indicado debe alojar la base del `DATABASE_URL`; el adaptador usa su puerto interno `5432` y transmite el dump por entrada/salida estándar, sin escribir rutas del host dentro del contenedor.
+
+Restaure **sin arrancar API, worker ni scheduler**. Cree una base PostgreSQL sin esquema y un bucket existente vacío distinto; el comando rechaza tablas, secuencias u objetos ya existentes. Apunte `DATABASE_URL` y `OBJECT_STORAGE_BUCKET` a esos destinos, conserve el archivo cifrado y el journal actual externo, y ejecute:
+
+```bash
+LIFECYCLE_QUIESCED=true LIFECYCLE_BACKUP_INPUT=/secure/backup.enc \
+  pnpm --filter @crashmemory/lifecycle restore
+```
+
+`pg_restore` aplica esquema, datos y restricciones en una sola transacción y falla ante errores; luego se restauran originales y se reaplican todas las barreras del journal, incluso las de mensajes o cuentas ausentes del snapshot. Si cualquier etapa falla, descarte la base y bucket de destino y repita sobre destinos vacíos; no arranque procesos antes de un resultado `restore_completed`. El journal actual es irremplazable para garantizar borrados posteriores a la copia. El archivo se construye en memoria y su tamaño práctico depende de la RAM disponible; la QA real usó fixtures pequeños, no un volumen de producción.
+
+Si MinIO falla durante un borrado, las claves quedan en `lifecycle_object_cleanup` sin dependencia del usuario eliminado. Cuando MinIO vuelva, con `DATABASE_URL` y las variables `OBJECT_STORAGE_*` configuradas ejecute:
+
+```bash
+LIFECYCLE_CLEANUP_LIMIT=100 pnpm --filter @crashmemory/lifecycle cleanup:retry
+```
+
+La salida `object_cleanup_retried` informa `removed`, `pending` y `skippedLive`. El comando sólo quita la intención después de confirmar la eliminación del objeto; nunca elimina un blob que todavía aparece en el catálogo. Repítalo hasta que `pending` sea cero o investigue las claves `skippedLive`/fallidas. Gmail renueva el watch durante las 48 horas previas a su expiración al ejecutar el tick configurado; las llamadas HTTP Gmail y OAuth tienen timeout de 30 segundos para permitir drenaje acotado.
 
 ## Gmail V04
 

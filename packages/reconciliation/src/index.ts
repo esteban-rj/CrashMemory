@@ -296,15 +296,24 @@ export class ReconciliationService {
     event: Extract<OutboxEvent, { type: "obligation.candidate.created.v1" }>,
     client: PoolClient,
   ): Promise<void> {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))",
+      [`lifecycle:user:${event.userId}`],
+    );
     const candidateId = event.payload.obligationId;
     const loaded = await client.query<Row>(
       `SELECT c.*,r.observed_at FROM extraction_candidates c
        JOIN source_item_revisions r ON r.id=c.source_item_revision_id AND r.user_id=c.user_id
-       WHERE c.id=$1 AND c.user_id=$2 AND c.source_item_revision_id=$3 AND c.state='ready'`,
+       JOIN source_items item ON item.id=r.source_item_id AND item.user_id=c.user_id
+       JOIN source_connections connection ON connection.id=item.source_connection_id AND connection.user_id=c.user_id
+       WHERE c.id=$1 AND c.user_id=$2 AND c.source_item_revision_id=$3 AND c.state='ready'
+         AND NOT EXISTS (SELECT 1 FROM lifecycle_tombstones t WHERE t.user_id=c.user_id AND
+           (t.scope='account' OR (t.scope='gmail_connection' AND t.source_connection_id=connection.id)
+            OR (t.scope='gmail_message' AND t.external_account_id=connection.external_account_id AND t.external_message_id=item.external_id)))`,
       [candidateId, event.userId, event.payload.sourceItemRevisionId],
     );
     const candidate = loaded.rows[0];
-    if (!candidate) throw new Error("Candidate is unavailable or not ready");
+    if (!candidate) return;
     const evidence = await evidenceForCandidate(
       client,
       event.userId,
@@ -480,6 +489,10 @@ export class ReconciliationService {
     resolution?: "accept" | "reject";
   }): Promise<{ state: ObligationState; versionId: string; revision: number }> {
     return inTransaction(this.pool, async (client) => {
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))",
+        [`lifecycle:user:${input.userId}`],
+      );
       const row = await current(client, input.userId, input.obligationId);
       if (Number(row.revision) !== input.expectedVersion)
         throw new ReconciliationError(

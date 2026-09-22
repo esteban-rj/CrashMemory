@@ -2,7 +2,7 @@
 
 Estas reglas recogen el flujo solicitado por el usuario. El plan está en `docs/planning/plan-multisesion.md`; leer también la revisión técnica antes de implementar.
 
-- El primer MVP se limita a Gmail → obligaciones con evidencia → notificaciones por Telegram, con una web mínima de gestión. La agenda vigente es V01–V10 más I00; las antiguas S01–S26 se sustituyeron y las funciones ampliadas están diferidas.
+- El primer MVP se limita a Gmail → obligaciones con evidencia → notificaciones por Telegram, con una web mínima de gestión. La agenda funcional vigente es V01–V10 más I00; el plan registra además las excepciones I00.1 y V09.1 (13 unidades en total). Las antiguas S01–S26 se sustituyeron y las funciones ampliadas están diferidas.
 - Elegir el modelo y esfuerzo asignados a la sesión en el plan. Escalar solo con una dificultad concreta documentada; no usar el modelo más costoso por defecto.
 - Trabajar en un worktree y una rama exclusivos por sesión, incluyendo coordinación, revisión y sesiones hijas. No desarrollar directamente sobre `main`.
 - Mantener un máximo global de cuatro sesiones activas, contando coordinadores, revisores y descendientes. I00 reserva los cupos; una sesión en espera debe reservar uno antes de reanudarse.

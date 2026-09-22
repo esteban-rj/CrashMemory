@@ -10,6 +10,7 @@ import {
   EncryptedFileDeletionJournal,
   LifecycleJournalRequiredError,
   LifecycleService,
+  readEncryptedJournal,
 } from "../src/index.ts";
 
 test("encrypted lifecycle journal is fsync-safe append-only and does not expose source identifiers", async () => {
@@ -27,6 +28,40 @@ test("encrypted lifecycle journal is fsync-safe append-only and does not expose 
   assert.doesNotMatch(raw, /synthetic-message-42/);
   assert.match(raw, /"iv"/);
   assert.match(raw, /"tag"/);
+});
+
+test("concurrent initialization and append across instances writes one header and eight valid entries", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "crashmemory-v09-journal-race-"),
+  );
+  const path = join(directory, "journal.log");
+  const key = Buffer.alloc(32, 9).toString("base64");
+  const journals = [
+    new EncryptedFileDeletionJournal(path, key),
+    new EncryptedFileDeletionJournal(path, key),
+  ];
+  const entries = Array.from({ length: 8 }, (_, index) => {
+    const userId = randomUUID();
+    return {
+      userId,
+      scope: "account",
+      tombstoneKey: `${userId}:account`,
+      reason: "account_deleted",
+      index,
+    };
+  });
+  await Promise.all([
+    journals[0]!.initialize(),
+    journals[1]!.initialize(),
+    ...entries.map((entry, index) => journals[index % 2]!.append(entry)),
+  ]);
+  const decoded = await readEncryptedJournal(path, key);
+  assert.equal(decoded.length, 8);
+  assert.deepEqual(
+    new Set(decoded.map((entry) => entry.tombstoneKey)),
+    new Set(entries.map((entry) => entry.tombstoneKey)),
+  );
+  assert.equal((await readFile(path, "utf8")).trim().split("\n").length, 9);
 });
 
 test("destructive lifecycle calls fail before database work without a durable journal", async () => {
@@ -114,11 +149,35 @@ test(
           journal.push(entry);
         },
       });
-      const result = await service.deleteSourceConnection({
+      const writerLock = await pool.connect();
+      await writerLock.query(
+        "SELECT pg_advisory_lock(hashtextextended($1, 1))",
+        [`lifecycle:user:${userId}`],
+      );
+      let finished = false;
+      const deletion = service.deleteSourceConnection({
         userId,
         connectionId,
         actorSessionId: sessionId,
       });
+      void deletion.then(() => {
+        finished = true;
+      });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        assert.equal(
+          finished,
+          false,
+          "deletion must wait for the in-flight writer lock",
+        );
+      } finally {
+        await writerLock.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 1))",
+          [`lifecycle:user:${userId}`],
+        );
+        writerLock.release();
+      }
+      const result = await deletion;
       assert.deepEqual(result, {
         deletedSourceItems: 1,
         deletedObligations: 1,
@@ -145,6 +204,89 @@ test(
       assert.ok(journal.some((entry) => entry.scope === "gmail_message"));
     } finally {
       await pool.query("DELETE FROM users WHERE id=$1", [userId]);
+      await pool.end();
+    }
+  },
+);
+
+test(
+  "durable object cleanup retries after account deletion and protects live blobs",
+  { skip: !databaseUrl },
+  async () => {
+    const pool = createPool(databaseUrl!);
+    await migrate(pool);
+    const userId = randomUUID(),
+      blobId = randomUUID(),
+      liveUser = randomUUID(),
+      liveBlob = randomUUID();
+    const key = `users/${userId}/blobs/${blobId}`;
+    const liveKey = `users/${liveUser}/blobs/${liveBlob}`;
+    class FlakyStorage extends MemoryObjectStorage {
+      fails = 1;
+      override async remove(storageKey: string): Promise<void> {
+        if (this.fails-- > 0) throw new Error("synthetic_minio_outage");
+        await super.remove(storageKey);
+      }
+    }
+    const storage = new FlakyStorage();
+    try {
+      for (const id of [userId, liveUser])
+        await pool.query(
+          "INSERT INTO users(id,email_normalized,password_hash,time_zone) VALUES ($1,$2,'synthetic','America/Bogota')",
+          [id, `${id}@example.test`],
+        );
+      for (const [id, owner, storageKey] of [
+        [blobId, userId, key],
+        [liveBlob, liveUser, liveKey],
+      ]) {
+        storage.objects.set(storageKey!, new Uint8Array([1]));
+        await pool.query(
+          "INSERT INTO blobs(id,user_id,storage_key,content_type,byte_size,content_sha256) VALUES ($1,$2,$3,'text/plain',1,$4)",
+          [id, owner, storageKey, "a".repeat(64)],
+        );
+      }
+      const journal = new EncryptedFileDeletionJournal(
+        join(
+          await mkdtemp(join(tmpdir(), "crashmemory-v09-cleanup-")),
+          "journal",
+        ),
+        Buffer.alloc(32, 5).toString("base64"),
+      );
+      assert.equal(
+        (
+          await new LifecycleService(pool, storage, journal).deleteAccount({
+            userId,
+          })
+        ).pendingObjectCleanup,
+        1,
+      );
+      assert.equal(storage.objects.has(key), true);
+      await pool.query(
+        "INSERT INTO lifecycle_object_cleanup(storage_key,user_id) VALUES ($1,$2)",
+        [liveKey, liveUser],
+      );
+      const retried = await new LifecycleService(
+        pool,
+        storage,
+      ).drainObjectCleanup();
+      assert.deepEqual(retried, { removed: 1, pending: 1, skippedLive: 1 });
+      assert.equal(storage.objects.has(key), false);
+      assert.equal(storage.objects.has(liveKey), true);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT 1 FROM lifecycle_object_cleanup WHERE storage_key=$1",
+            [key],
+          )
+        ).rowCount,
+        0,
+      );
+    } finally {
+      await pool.query(
+        "DELETE FROM lifecycle_object_cleanup WHERE storage_key=$1",
+        [liveKey],
+      );
+      await pool.query("DELETE FROM users WHERE id=$1", [liveUser]);
       await pool.end();
     }
   },

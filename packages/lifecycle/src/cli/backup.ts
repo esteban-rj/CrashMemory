@@ -11,6 +11,7 @@ const required = [
   "LIFECYCLE_BACKUP_OUTPUT",
   "LIFECYCLE_BACKUP_KEY_BASE64",
   "LIFECYCLE_JOURNAL_PATH",
+  "LIFECYCLE_JOURNAL_KEY_BASE64",
   "OBJECT_STORAGE_BUCKET",
 ] as const;
 for (const name of required)
@@ -29,6 +30,11 @@ try {
     outputPath: process.env.LIFECYCLE_BACKUP_OUTPUT!,
     encryptionKeyBase64: process.env.LIFECYCLE_BACKUP_KEY_BASE64!,
     journalPath: process.env.LIFECYCLE_JOURNAL_PATH!,
+    journalKeyBase64: process.env.LIFECYCLE_JOURNAL_KEY_BASE64!,
+    postgresTools: {
+      container: process.env.LIFECYCLE_PG_CONTAINER,
+      dockerContext: process.env.LIFECYCLE_DOCKER_CONTEXT,
+    },
   });
   console.log(
     JSON.stringify({

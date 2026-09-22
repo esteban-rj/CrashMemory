@@ -2,7 +2,7 @@
 
 Versión 1.1 · 2026-09-20 · Proyecto CrashMemory / Cerebro Personal.
 
-**Alcance vigente: Gmail como única fuente y Telegram como canal de notificaciones. Hay 10 sesiones de implementación y validación (V01–V10), una sesión coordinadora I00 y una sesión hija de integración I00.1: 12 unidades en total.** La planificación S00 ya realizada no forma parte de las sesiones pendientes. Son unidades de trabajo que pueden requerir varios turnos, no una estimación de días ni una garantía de duración.
+**Alcance vigente: Gmail como única fuente y Telegram como canal de notificaciones. Hay 10 sesiones de implementación y validación (V01–V10), una sesión coordinadora I00 y dos sesiones hijas de recuperación (I00.1 y V09.1): 13 unidades en total.** La planificación S00 ya realizada no forma parte de las sesiones pendientes. Son unidades de trabajo que pueden requerir varios turnos, no una estimación de días ni una garantía de duración.
 
 Este plan sustituye al plan de 25 sesiones del commit `7d64199` por instrucción del usuario. Conserva el [spec original](../specs/cerebro-personal-v1.0.md) y su [revisión técnica](revision-spec.md) como referencias. Las sesiones antiguas S01–S26 dejan de ser la agenda de ejecución; se usan identificadores V01–V10 para evitar confusiones.
 
@@ -35,13 +35,15 @@ La selección mantiene la guía documentada en la revisión inicial: Luna para t
 | --- | --- | --- |
 | L | `gpt-5.6-luna` | V08, interfaz mínima sobre APIs ya integradas; esfuerzo `medium`. |
 | T | `gpt-5.6-terra` | V01, V03, V04, V05, V07 y V09; esfuerzo `high`. I00 usa `medium`. |
-| S | `gpt-5.6-sol` | V02, V06 y V10; esfuerzo `high`. |
+| S | `gpt-5.6-sol` | V02, V06 y V10; esfuerzo `high`. I00.1 y V09.1 usan `high` por los bloqueos documentados. |
 
-**Conteo: 6 Terra + 1 Luna + 3 Sol = 10 sesiones de entrega; I00 añade una Terra de coordinación e I00.1 añade una Sol de integración puntual: 12 unidades en total.** No se programa Astra ni esfuerzo `max`/`ultra`. Estos agentes de desarrollo son independientes de los modelos de extracción que el producto configure en ModelGateway.
+**Conteo: 6 Terra + 1 Luna + 3 Sol = 10 sesiones de entrega; I00 añade una Terra de coordinación e I00.1/V09.1 añaden dos Sol de recuperación: 13 unidades en total.** No se programa Astra ni esfuerzo `max`/`ultra`. Estos agentes de desarrollo son independientes de los modelos de extracción que el producto configure en ModelGateway.
 
 I00.1 usa `gpt-5.6-sol` / `high` para recuperar la integración V07. Los conflictos repetidos de I00 en archivos compartidos y el fallo de aplicación del último parche justifican esta escalada concreta. Al no poder reanudar la sesión original I00 por el límite de hilos del cliente, I00.1 continúa la integración V05 en la misma rama, worktree y unidad de conteo, con cupo reservado por raíz. No añade una undécima entrega funcional ni altera V01–V10.
 
 Para el cierre documental de V05, I00.1 tampoco pudo reactivarse por ese límite de hilos. Root tomó el bloqueo de integración y autorizó excepcionalmente a la autora de V05 a avanzar por fast-forward el candidato ya revisado, sin nueva rama, sesión ni cambio funcional.
+
+V09.1 usa `gpt-5.6-sol` / `high` para cerrar la misma entrega V09. V09 con Terra/high publicó varios checkpoints, pero después de continuaciones repetidas seguían sin probarse backup/restore real y la barrera contra resurrección tras restaurar. I00 reservó un tercer cupo global para V09.1 (I00 + V08 + V09.1 = tres activos). La sesión padre V09 terminó y no se reactivó. Como excepción de rescate, V09.1 creó `codex/v09-lifecycle-recovery` y su worktree exclusivo desde `origin/main` verificado `3075b6e`, y lo avanzó sin commit al candidato V09 ya publicado `b4c7d9a`. El diff no publicado del padre se revisó y portó donde correspondía, sin editar su worktree. No se añade una entrega funcional nueva: V09.1 completa V09 y consume una unidad y uno de los mismos cuatro cupos.
 
 Si un fallo reproducible requiere más capacidad, documentar intentos y escalar esa sesión, sin crear por defecto otra sesión revisora. Si el alcance obliga a dividir una entrega, actualizar el conteo y las dependencias; no anunciar que siguen siendo diez mientras se crean sesiones adicionales.
 
@@ -75,7 +77,7 @@ Si un fallo reproducible requiere más capacidad, documentar intentos y escalar 
 
 V07 puede desarrollarse junto con Gmail y extracción porque consume contratos y eventos fijados en V01/V02; no necesita esperar al código del reconciliador. Cada API permanece validada con fixtures hasta conectar el flujo real. V08 consume APIs integradas. V09 entrega operación por API/comandos, de modo que puede trabajar en paralelo con la web sin editar sus pantallas.
 
-Las diez sesiones de entrega incluyen código, migraciones, pruebas, documentación y sus correcciones. No se reserva por defecto una sesión adicional para cada integración o revisión. I00.1 es la excepción explícita para la recuperación V07 y usa uno de los cuatro cupos globales.
+Las diez sesiones de entrega incluyen código, migraciones, pruebas, documentación y sus correcciones. No se reserva por defecto una sesión adicional para cada integración o revisión. I00.1 y V09.1 son excepciones explícitas por bloqueos documentados y usan los mismos cuatro cupos globales.
 
 ## 5. Árbol y agenda
 
@@ -88,6 +90,7 @@ I00 · Coordinación e integración
 ├── V07 · Avisos Telegram
 ├── V08 · Web mínima
 ├── V09 · Ciclo de vida
+│   └── V09.1 · Recuperación de backup/restore y cierre V09
 └── V10 · Validación del MVP 1
 ```
 

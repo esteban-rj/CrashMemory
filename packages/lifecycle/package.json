@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --import tsx test/*.test.ts",
     "backup": "tsx src/cli/backup.ts",
-    "restore": "tsx src/cli/restore.ts"
+    "restore": "tsx src/cli/restore.ts",
+    "cleanup:retry": "tsx src/cli/retry-object-cleanup.ts"
   },
   "dependencies": {
     "@crashmemory/db": "workspace:*",
@@ -19,6 +20,8 @@
     "pg": "8.16.3"
   },
   "devDependencies": {
+    "@crashmemory/gmail": "workspace:*",
+    "@crashmemory/reconciliation": "workspace:*",
     "@types/pg": "8.15.6"
   }
 }
