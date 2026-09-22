@@ -12,6 +12,7 @@ export class LifecycleNotFoundError extends Error {
     this.name = "LifecycleNotFoundError";
   }
 }
+export * from "./backup.ts";
 
 export class LifecycleStorageRequiredError extends Error {
   constructor() {
@@ -160,7 +161,7 @@ export class LifecycleService {
   async disconnectGmail(input: {
     userId: string;
     connectionId: string;
-    actorSessionId: string;
+    actorSessionId?: string;
   }): Promise<"revoked" | "not_configured" | "failed"> {
     this.requireJournal();
     const credential = await inTransaction(this.pool, async (client) => {
@@ -224,7 +225,7 @@ export class LifecycleService {
 
   async unlinkTelegram(input: {
     userId: string;
-    actorSessionId: string;
+    actorSessionId?: string;
   }): Promise<number> {
     const journal = this.requireJournal();
     return inTransaction(this.pool, async (client) => {
@@ -268,7 +269,7 @@ export class LifecycleService {
   async deleteSourceConnection(input: {
     userId: string;
     connectionId: string;
-    actorSessionId: string;
+    actorSessionId?: string;
   }): Promise<LifecycleResult> {
     return this.deleteSource(input, undefined);
   }
@@ -277,13 +278,13 @@ export class LifecycleService {
     userId: string;
     connectionId: string;
     externalMessageId: string;
-    actorSessionId: string;
+    actorSessionId?: string;
   }): Promise<LifecycleResult> {
     return this.deleteSource(input, input.externalMessageId);
   }
 
   private async deleteSource(
-    input: { userId: string; connectionId: string; actorSessionId: string },
+    input: { userId: string; connectionId: string; actorSessionId?: string },
     onlyExternalMessageId?: string,
   ): Promise<LifecycleResult> {
     // Refuse before the DB mutation when originals cannot be removed. This
@@ -534,6 +535,10 @@ export class LifecycleService {
           [blob.storage_key, input.userId],
         );
       }
+      await client.query(
+        "DELETE FROM extraction_candidate_evidence WHERE user_id = $1",
+        [input.userId],
+      );
       const removed = await client.query("DELETE FROM users WHERE id = $1", [
         input.userId,
       ]);
@@ -549,7 +554,7 @@ export class LifecycleService {
   async deleteObligation(input: {
     userId: string;
     obligationId: string;
-    actorSessionId: string;
+    actorSessionId?: string;
   }): Promise<void> {
     const journal = this.requireJournal();
     await inTransaction(this.pool, async (client) => {
