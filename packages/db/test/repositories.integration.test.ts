@@ -502,7 +502,7 @@ test(
           provider: "gmail",
           nonceHash,
         }),
-        true,
+        0,
       );
       assert.equal(
         await oauth.consume({
@@ -511,7 +511,7 @@ test(
           provider: "gmail",
           nonceHash,
         }),
-        false,
+        null,
       );
 
       const validEventId = randomUUID();

@@ -71,6 +71,31 @@ export class PostgresGmailPersistence implements GmailPersistence {
     if (result.rowCount !== 1) throw new GmailLifecycleBlockedError();
   }
 
+  /**
+   * Holds one session advisory lock across object I/O and catalog persistence.
+   * Source deletion takes the transaction form of the same lock, so it cannot
+   * commit between the preflight and the first blob write.
+   */
+  private async withLifecycleLock<T>(operation: () => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    let locked = false;
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 1))", [
+        `lifecycle:gmail:${this.userId}:${this.sourceConnectionId}`,
+      ]);
+      locked = true;
+      return await operation();
+    } finally {
+      if (locked) {
+        await client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 1))",
+          [`lifecycle:gmail:${this.userId}:${this.sourceConnectionId}`],
+        );
+      }
+      client.release();
+    }
+  }
+
   private async writeBlob(
     kind: string,
     material: Uint8Array,
@@ -107,6 +132,12 @@ export class PostgresGmailPersistence implements GmailPersistence {
   }
 
   private async persistMessage(message: NormalizedMessage): Promise<void> {
+    return this.withLifecycleLock(() => this.persistMessageLocked(message));
+  }
+
+  private async persistMessageLocked(
+    message: NormalizedMessage,
+  ): Promise<void> {
     // Reject before every original/body/attachment write. The transaction
     // below repeats the check before catalog rows or events are created.
     await this.assertWritable(message.externalId);

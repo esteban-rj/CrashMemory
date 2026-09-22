@@ -247,6 +247,10 @@ export class LifecycleService {
     if (!this.storage) throw new LifecycleStorageRequiredError();
     const journal = this.requireJournal();
     const result = await inTransaction(this.pool, async (client) => {
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))",
+        [`lifecycle:gmail:${input.userId}:${input.connectionId}`],
+      );
       const connection = await client.query<{ external_account_id: string }>(
         `SELECT external_account_id FROM source_connections
          WHERE id = $1 AND user_id = $2 AND provider = 'gmail' FOR UPDATE`,
@@ -254,6 +258,16 @@ export class LifecycleService {
       );
       if (connection.rowCount !== 1) throw new LifecycleNotFoundError();
       const externalAccountId = connection.rows[0]!.external_account_id;
+      // A callback that already exchanged a code must still fail its epoch
+      // check before storing a credential for this deleted source.
+      await client.query(
+        "DELETE FROM oauth_callback_nonces WHERE user_id = $1 AND provider = 'gmail' AND consumed_at IS NULL",
+        [input.userId],
+      );
+      await client.query(
+        "UPDATE users SET lifecycle_epoch = lifecycle_epoch + 1 WHERE id = $1",
+        [input.userId],
+      );
       const items = await client.query<{ id: string; external_id: string }>(
         `SELECT id, external_id FROM source_items WHERE user_id = $1 AND source_connection_id = $2
          AND ($3::text IS NULL OR external_id = $3) FOR UPDATE`,
@@ -349,7 +363,7 @@ export class LifecycleService {
                 [input.userId, affectedIds],
               )
             ).rowCount ?? 0);
-      const deletedBlobs = await client.query<{ storage_key: string }>(
+      await client.query(
         `DELETE FROM outbox_events WHERE user_id = $1
          AND payload->>'sourceItemRevisionId' = ANY($2::text[])`,
         [input.userId, revisionIds],
@@ -397,7 +411,7 @@ export class LifecycleService {
             );
       // A blob becomes unreachable only after all source rows are gone. Never
       // remove a shared object just because one source revision was erased.
-      await client.query(
+      const deletedBlobs = await client.query<{ storage_key: string }>(
         `DELETE FROM blobs b WHERE b.user_id = $1 AND b.storage_key = ANY($2::text[])
          AND NOT EXISTS (SELECT 1 FROM source_item_revisions r WHERE r.original_blob_id = b.id)
          AND NOT EXISTS (SELECT 1 FROM source_revision_bodies body WHERE body.body_blob_id = b.id)
@@ -405,6 +419,13 @@ export class LifecycleService {
          RETURNING storage_key`,
         [input.userId, blobs.rows.map((row) => row.storage_key)],
       );
+      for (const blob of deletedBlobs.rows) {
+        await client.query(
+          `INSERT INTO lifecycle_object_cleanup(storage_key,user_id)
+           VALUES ($1,$2) ON CONFLICT (storage_key) DO NOTHING`,
+          [blob.storage_key, input.userId],
+        );
+      }
       if (!onlyExternalMessageId)
         await client.query(
           "DELETE FROM source_connections WHERE id = $1 AND user_id = $2",
@@ -432,7 +453,12 @@ export class LifecycleService {
       input.userId,
       result.keys,
     );
-    return { ...result, pendingObjectCleanup };
+    return {
+      deletedSourceItems: result.deletedSourceItems,
+      deletedObligations: result.deletedObligations,
+      cancelledReminders: result.cancelledReminders,
+      pendingObjectCleanup,
+    };
   }
 
   async deleteAccount(input: {
@@ -455,6 +481,13 @@ export class LifecycleService {
         "SELECT storage_key FROM blobs WHERE user_id = $1",
         [input.userId],
       );
+      for (const blob of blobs.rows) {
+        await client.query(
+          `INSERT INTO lifecycle_object_cleanup(storage_key,user_id)
+           VALUES ($1,$2) ON CONFLICT (storage_key) DO NOTHING`,
+          [blob.storage_key, input.userId],
+        );
+      }
       const removed = await client.query("DELETE FROM users WHERE id = $1", [
         input.userId,
       ]);
@@ -550,6 +583,10 @@ export class LifecycleService {
     for (const storageKey of keys) {
       try {
         await this.storage.remove(storageKey);
+        await this.pool.query(
+          "DELETE FROM lifecycle_object_cleanup WHERE storage_key = $1 AND user_id = $2",
+          [storageKey, userId],
+        );
       } catch (error) {
         pending += 1;
         await this.pool.query(
