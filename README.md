@@ -1,6 +1,6 @@
-# CrashMemory — Extracción verificable V05
+# CrashMemory — Avisos Telegram V07
 
-CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V05 añade ModelGateway, presupuesto duradero y extracción de candidatos verificables desde cuerpo/PDF de texto. Gmail, reconciliación y Telegram aún no están conectados entre sí.
+CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V07 añade el vínculo seguro del bot, políticas de recordatorio y una frontera durable para entregar por Telegram. Gmail y reconciliación continúan en sus sesiones propias; V07 se valida con eventos y datos sintéticos.
 
 ## Requisitos
 
@@ -167,6 +167,23 @@ Cada candidato requiere título, importe positivo con moneda ISO, vencimiento y 
 
 `DurableExtractionRunner` reclama un `extraction_job`, carga sólo la revisión autorizada, ejecuta el modelo fuera de transacciones y, al terminar, persiste páginas PDF, evidencia y candidatos junto con el evento `obligation.candidate.created.v1`. V06 consume esos candidatos; no se confirma ninguna obligación en V05.
 
+## Avisos Telegram V07
+
+El enlace del bot requiere `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` y el mismo keyring de credenciales que usa la aplicación. Añada los valores reales solamente a `.env` ignorado; no use un token de bot ni un chat real en pruebas. El worker lee `getUpdates` cada `TELEGRAM_POLL_INTERVAL_MS` (10 segundos por defecto). Cuando un usuario autenticado hace `POST /api/v1/telegram/link` con `Content-Type: application/json` y su cabecera `X-CSRF-Token`, recibe una vez el comando `/start <código>`. El código dura diez minutos, se guarda sólo como hash y el chat que responde se cifra antes de persistirse. El cursor de sondeo avanza únicamente después de registrar la actualización; el contenido de los mensajes no se conserva.
+
+Los avisos automáticos están apagados inicialmente: la calidad de las inferencias aún no está medida. Sólo después de aprobar esa política se configura `NOTIFICATIONS_AUTOMATIC_ENABLED=true` tanto en worker como en scheduler. Con esa opción, una obligación `confirmed` con vencimiento genera los avisos `one_day` (24 horas antes) y `due`; el scheduler convierte los recordatorios vencidos en eventos de outbox. Una actualización, pago, descarte o borrado publica `obligation.reminder.reschedule.requested.v1` y cancela los recordatorios que sigan pendientes.
+
+Antes de `sendMessage`, V07 inserta un intento append-only en `notification_delivery_attempts` y cierra toda transacción de dominio. Sólo entonces llama a Telegram y persiste una resolución append-only: `sent`, `failed` o `unknown`. Si un proceso cae después de preparar el intento, el siguiente procesamiento lo deja `unknown` sin enviar otra vez. Los `unknown` requieren revisión operativa; no hay reintento automático ni endpoint de reenvío. Las tablas anteriores de V02 siguen inmutables.
+
+La verificación sintética completa, sin tráfico a Telegram, usa una respuesta HTTP simulada y una base aislada:
+
+```bash
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v07 \
+  pnpm --filter @crashmemory/notifications test
+```
+
+Comprueba el vínculo de un solo uso, el cursor durable, intento → `sendMessage` simulado → `sent`, deduplicación de un envío confirmado y el paso de un intento interrumpido a `unknown` sin nueva llamada HTTP.
+
 Antes de cada petición remota, `ModelBudgetRepository.reserve` bloquea el presupuesto USD y reserva el máximo del JSON completo enviado (instrucciones, documento y esquema), limitado por `MODEL_MAX_INPUT_TOKENS` y `MODEL_MAX_OUTPUT_TOKENS`. Las tarifas por millón son versionadas y configurables. La respuesta con uso queda `estimated`; sin uso se conserva la estimación conservadora. Un timeout o fallo de transporte queda `unknown` y mantiene su reserva, nunca se muestra como coste cero. El ledger guarda sólo proveedor, modelo, versión, unidades y coste; no guarda correo, PDF, prompt, respuesta ni credencial.
 
 El presupuesto se configura mediante la API de código `new ModelBudgetRepository(pool).setLimit(...)`; aún no existe endpoint HTTP. Con el PostgreSQL aislado de este worktree, compruebe el presupuesto/ledger y los perfiles sin enviar datos ni necesitar clave API:
@@ -181,7 +198,7 @@ pnpm --filter @crashmemory/extraction test
 
 ## Límites actuales
 
-V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. Tampoco implementa OAuth Gmail, reconciliación, Telegram, borrado/exportación o pantallas de gestión. ObjectStorage persiste originales autorizados, pero V09 define el borrado y barreras contra resurrección.
+V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08/V10 completarán el recorrido y V09 define borrado y barreras contra resurrección.
 
 La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.md) fija para V05 `gpt-5.6-terra` configurable con esfuerzo `medium`, `store: false`, confirmación explícita del proyecto y bloqueo total de red para `local-only`. Distingue la política de no entrenamiento de la retención de monitoreo de abuso y no presume ZDR.
 
@@ -194,4 +211,6 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V03     | Runtime durable                                              | Integrada en `origin/main` (`c098b6d`).               |
 | V04     | Gmail                                                        | En desarrollo.                                        |
 | V05     | ModelGateway, presupuesto, parsers y candidatos verificables | En validación para integración.                       |
-| V06–V10 | Reconciliación, Telegram, web, ciclo de vida y validación    | Pendiente.                                            |
+| V06     | Reconciliación                                               | Pendiente.                                            |
+| V07     | Vínculo Telegram, recordatorios e intentos durables          | Lista para integración.                               |
+| V08–V10 | Web mínima, ciclo de vida y validación                       | Pendiente.                                            |

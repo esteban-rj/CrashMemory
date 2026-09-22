@@ -41,6 +41,9 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
       '@crashmemory/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -63,6 +66,9 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
       '@crashmemory/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -94,9 +100,15 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
       '@crashmemory/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@crashmemory/security':
+        specifier: workspace:*
+        version: link:../../packages/security
 
   packages/canonical-model:
     dependencies:
@@ -155,6 +167,28 @@ importers:
       zod:
         specifier: 4.1.12
         version: 4.1.12
+
+  packages/notifications:
+    dependencies:
+      '@crashmemory/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@crashmemory/db':
+        specifier: workspace:*
+        version: link:../db
+      '@crashmemory/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@crashmemory/security':
+        specifier: workspace:*
+        version: link:../security
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/pg':
+        specifier: 8.15.6
+        version: 8.15.6
 
   packages/runtime:
     dependencies:

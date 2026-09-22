@@ -749,7 +749,8 @@ export class ReminderRepository {
       `INSERT INTO reminders(
          id, user_id, obligation_id, obligation_version_id, target_version,
          scheduled_for, policy, dedupe_key
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (user_id, dedupe_key) DO NOTHING`,
       [
         input.id,
         input.userId,
@@ -757,7 +758,7 @@ export class ReminderRepository {
         input.obligationVersionId,
         input.targetVersion,
         input.scheduledFor,
-        input.policy,
+        JSON.stringify(input.policy),
         input.dedupeKey,
       ],
     );
@@ -789,6 +790,281 @@ export class ReminderRepository {
         input.resolvedAt,
       ],
     );
+  }
+}
+
+export interface TelegramRecipientRecord {
+  id: string;
+  userId: string;
+  encryptedChatId: EncryptedSecret;
+}
+
+export interface DeliveryAttemptRecord {
+  id: string;
+  userId: string;
+  reminderId: string;
+  attemptNumber: number;
+  state: "prepared" | "resolved";
+  outcome: "sent" | "failed" | "unknown" | null;
+}
+
+/** Durable persistence for bot linking and the external-delivery boundary. */
+export class NotificationRepository {
+  constructor(private readonly db: Queryable) {}
+
+  async createLinkChallenge(input: {
+    id: string;
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO telegram_link_challenges(id, user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [input.id, input.userId, input.tokenHash, input.expiresAt],
+    );
+  }
+
+  async registerTelegramUpdate(input: {
+    botKey: string;
+    updateId: number;
+  }): Promise<boolean> {
+    const result = await this.db.query(
+      `INSERT INTO telegram_inbound_updates(bot_key, update_id)
+       VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [input.botKey, input.updateId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async setPollOffset(botKey: string, nextUpdateId: number): Promise<void> {
+    await this.db.query(
+      `INSERT INTO telegram_poll_offsets(bot_key, next_update_id)
+       VALUES ($1, $2)
+       ON CONFLICT (bot_key) DO UPDATE
+       SET next_update_id = GREATEST(telegram_poll_offsets.next_update_id, EXCLUDED.next_update_id),
+           updated_at = now()`,
+      [botKey, nextUpdateId],
+    );
+  }
+
+  async getPollOffset(botKey: string): Promise<number | null> {
+    const result = await this.db.query<{ next_update_id: string }>(
+      "SELECT next_update_id FROM telegram_poll_offsets WHERE bot_key = $1",
+      [botKey],
+    );
+    return result.rowCount === 0
+      ? null
+      : Number(result.rows[0]?.next_update_id);
+  }
+
+  async consumeChallengeAndSetRecipient(input: {
+    challengeTokenHash: string;
+    recipient: TelegramRecipientRecord;
+    now?: Date;
+  }): Promise<"linked" | "ignored"> {
+    const now = input.now ?? new Date();
+    const challenge = await this.db.query<Record<string, unknown>>(
+      `UPDATE telegram_link_challenges SET consumed_at = $2
+       WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > $2
+       RETURNING id, user_id`,
+      [input.challengeTokenHash, now],
+    );
+    if (challenge.rowCount !== 1) return "ignored";
+    const userId = String(challenge.rows[0]?.user_id);
+    if (userId !== input.recipient.userId) {
+      throw new Error("Telegram recipient owner does not match link challenge");
+    }
+    await this.db.query(
+      `INSERT INTO telegram_recipients(
+         id, user_id, key_version, iv, ciphertext, auth_tag, state
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+       ON CONFLICT (user_id) DO UPDATE
+       SET id = EXCLUDED.id, key_version = EXCLUDED.key_version, iv = EXCLUDED.iv,
+           ciphertext = EXCLUDED.ciphertext, auth_tag = EXCLUDED.auth_tag,
+           state = 'active', linked_at = now(), revoked_at = NULL`,
+      [
+        input.recipient.id,
+        input.recipient.userId,
+        input.recipient.encryptedChatId.keyVersion,
+        Buffer.from(input.recipient.encryptedChatId.iv, "base64"),
+        Buffer.from(input.recipient.encryptedChatId.ciphertext, "base64"),
+        Buffer.from(input.recipient.encryptedChatId.authTag, "base64"),
+      ],
+    );
+    return "linked";
+  }
+
+  async activeRecipient(
+    userId: string,
+  ): Promise<TelegramRecipientRecord | null> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id, user_id, key_version, iv, ciphertext, auth_tag
+       FROM telegram_recipients WHERE user_id = $1 AND state = 'active'`,
+      [userId],
+    );
+    if (result.rowCount === 0) return null;
+    const row = result.rows[0] ?? {};
+    return {
+      id: String(row.id),
+      userId: String(row.user_id),
+      encryptedChatId: {
+        keyVersion: String(row.key_version),
+        iv: (row.iv as Buffer).toString("base64"),
+        ciphertext: (row.ciphertext as Buffer).toString("base64"),
+        authTag: (row.auth_tag as Buffer).toString("base64"),
+      },
+    };
+  }
+
+  async isDeliveryCurrent(input: {
+    reminderId: string;
+    userId: string;
+    targetVersion: number;
+  }): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1 FROM reminders r
+       JOIN obligations o ON o.id = r.obligation_id AND o.user_id = r.user_id
+       WHERE r.id = $1 AND r.user_id = $2 AND r.target_version = $3
+         AND r.state = 'delivering' AND o.state = 'confirmed'`,
+      [input.reminderId, input.userId, input.targetVersion],
+    );
+    return result.rowCount === 1;
+  }
+
+  async prepareDelivery(input: {
+    id: string;
+    reminderId: string;
+    userId: string;
+    targetVersion: number;
+  }): Promise<
+    | { state: "ready"; attempt: DeliveryAttemptRecord }
+    | { state: "already_resolved" | "unknown" | "cancelled" }
+  > {
+    const reminder = await this.db.query<Record<string, unknown>>(
+      `SELECT id, user_id, state, target_version
+       FROM reminders WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+      [input.reminderId, input.userId],
+    );
+    if (reminder.rowCount !== 1) return { state: "cancelled" };
+    const row = reminder.rows[0] ?? {};
+    if (
+      Number(row.target_version) !== input.targetVersion ||
+      row.state === "cancelled"
+    ) {
+      return { state: "cancelled" };
+    }
+    const prior = await this.db.query<Record<string, unknown>>(
+      `SELECT a.id, a.user_id, a.reminder_id, a.attempt_number, r.outcome
+       FROM notification_delivery_attempts a
+       LEFT JOIN notification_delivery_resolutions r ON r.attempt_id = a.id
+       WHERE a.reminder_id = $1
+       ORDER BY a.attempt_number DESC LIMIT 1 FOR UPDATE OF a`,
+      [input.reminderId],
+    );
+    const priorRow = prior.rows[0];
+    if (priorRow && priorRow.outcome === null) {
+      await this.db.query(
+        `INSERT INTO notification_delivery_resolutions(id, user_id, attempt_id, outcome, error_code)
+         VALUES ($1, $2, $3, 'unknown', 'interrupted_after_prepare')
+         ON CONFLICT (attempt_id) DO NOTHING`,
+        [randomUUID(), input.userId, priorRow.id],
+      );
+      await this.db.query(
+        `UPDATE reminders SET state = 'resolved', updated_at = now() WHERE id = $1`,
+        [input.reminderId],
+      );
+      return { state: "unknown" };
+    }
+    if (priorRow?.outcome === "sent" || priorRow?.outcome === "unknown") {
+      return { state: "already_resolved" };
+    }
+    const attemptNumber = Number(priorRow?.attempt_number ?? 0) + 1;
+    await this.db.query(
+      `INSERT INTO notification_delivery_attempts(id, user_id, reminder_id, attempt_number)
+       VALUES ($1, $2, $3, $4)`,
+      [input.id, input.userId, input.reminderId, attemptNumber],
+    );
+    await this.db.query(
+      `UPDATE reminders SET state = 'delivering', updated_at = now() WHERE id = $1`,
+      [input.reminderId],
+    );
+    return {
+      state: "ready",
+      attempt: {
+        id: input.id,
+        userId: input.userId,
+        reminderId: input.reminderId,
+        attemptNumber,
+        state: "prepared",
+        outcome: null,
+      },
+    };
+  }
+
+  async resolveDelivery(input: {
+    attemptId: string;
+    outcome: "sent" | "failed" | "unknown";
+    providerMessageId?: string;
+    errorCode?: string;
+  }): Promise<{ reminderId: string; userId: string } | null> {
+    const attempt = await this.db.query<Record<string, unknown>>(
+      `INSERT INTO notification_delivery_resolutions(
+         id, user_id, attempt_id, outcome, provider_message_id, error_code
+       ) SELECT $1, a.user_id, a.id, $2, $3, $4
+         FROM notification_delivery_attempts a
+         LEFT JOIN notification_delivery_resolutions r ON r.attempt_id = a.id
+         WHERE a.id = $5 AND r.attempt_id IS NULL
+       RETURNING attempt_id`,
+      [
+        randomUUID(),
+        input.outcome,
+        input.providerMessageId ?? null,
+        input.errorCode ?? null,
+        input.attemptId,
+      ],
+    );
+    if (attempt.rowCount !== 1) return null;
+    const row = await this.db.query<Record<string, unknown>>(
+      "SELECT reminder_id, user_id FROM notification_delivery_attempts WHERE id = $1",
+      [input.attemptId],
+    );
+    const attemptRow = row.rows[0] ?? {};
+    await this.db.query(
+      `UPDATE reminders SET state = 'resolved', updated_at = now()
+       WHERE id = $1 AND state = 'delivering'`,
+      [attemptRow.reminder_id],
+    );
+    return {
+      reminderId: String(attemptRow.reminder_id),
+      userId: String(attemptRow.user_id),
+    };
+  }
+
+  async cancelForObligation(
+    userId: string,
+    obligationId: string,
+  ): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE reminders SET state = 'cancelled', updated_at = now()
+       WHERE user_id = $1 AND obligation_id = $2 AND state IN ('scheduled', 'delivering')`,
+      [userId, obligationId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async cancelObsoleteForObligation(
+    userId: string,
+    obligationId: string,
+    currentVersionId: string,
+  ): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE reminders SET state = 'cancelled', updated_at = now()
+       WHERE user_id = $1 AND obligation_id = $2 AND obligation_version_id <> $3
+         AND state IN ('scheduled', 'delivering')`,
+      [userId, obligationId, currentVersionId],
+    );
+    return result.rowCount ?? 0;
   }
 }
 

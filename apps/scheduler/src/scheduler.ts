@@ -1,4 +1,5 @@
 import { createPool, DurableRuntimeRepository } from "@crashmemory/db";
+import { ReminderScheduler } from "@crashmemory/notifications";
 import { OutboxRelay, createOutboxQueue } from "@crashmemory/runtime";
 
 function required(name: "DATABASE_URL" | "REDIS_URL"): string {
@@ -23,18 +24,25 @@ async function main(): Promise<void> {
   });
   const { queue, connection } = createOutboxQueue(required("REDIS_URL"));
   const relay = new OutboxRelay(new DurableRuntimeRepository(pool), queue);
+  const reminders = new ReminderScheduler(
+    pool,
+    undefined,
+    process.env.NOTIFICATIONS_AUTOMATIC_ENABLED === "true",
+  );
   let stopping = false;
   let running = false;
   const tick = async (): Promise<void> => {
     if (running || stopping) return;
     running = true;
     try {
+      const scheduled = await reminders.enqueueDue();
       const dispatched = await relay.dispatchPending();
-      if (dispatched > 0) {
+      if (scheduled > 0 || dispatched > 0) {
         console.log(
           JSON.stringify({
             component: "scheduler",
             event: "dispatched",
+            scheduled,
             count: dispatched,
             metrics: relay.getMetrics(),
           }),

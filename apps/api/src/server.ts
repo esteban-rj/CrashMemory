@@ -1,5 +1,7 @@
 import { buildApp } from "./app.ts";
 import { createPool } from "@crashmemory/db";
+import { TelegramLinkService } from "@crashmemory/notifications";
+import { CredentialCipher } from "@crashmemory/security";
 import type { FastifyServerOptions } from "fastify";
 import {
   FASTIFY_REDACT_PATHS,
@@ -10,6 +12,15 @@ import {
 const port = Number(process.env.API_PORT ?? 4310);
 const databaseUrl = process.env.DATABASE_URL;
 const pool = databaseUrl ? createPool(databaseUrl) : undefined;
+const cipher =
+  pool &&
+  process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON &&
+  process.env.CREDENTIAL_ACTIVE_KEY_VERSION
+    ? CredentialCipher.fromEnvironment(
+        process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON,
+        process.env.CREDENTIAL_ACTIVE_KEY_VERSION,
+      )
+    : undefined;
 const loggerOptions = {
   level: process.env.LOG_LEVEL ?? "info",
   redact: { paths: [...FASTIFY_REDACT_PATHS], censor: "[REDACTED]" },
@@ -32,6 +43,9 @@ const app = buildApp({
           ),
         },
       }
+    : {}),
+  ...(pool && cipher && process.env.TELEGRAM_BOT_TOKEN
+    ? { telegramLinks: new TelegramLinkService(pool, cipher) }
     : {}),
   logger: loggerOptions,
 });

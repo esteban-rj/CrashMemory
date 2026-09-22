@@ -11,6 +11,7 @@
   "dependencies": {
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
+    "@crashmemory/notifications": "workspace:*",
     "@crashmemory/runtime": "workspace:*"
   }
 }

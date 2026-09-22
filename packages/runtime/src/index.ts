@@ -113,6 +113,17 @@ export interface RegisteredConsumer {
 }
 
 /**
+ * An external consumer owns its own durable attempt lifecycle.  It must never
+ * perform HTTP through `RegisteredConsumer`, because that handler is executed
+ * inside the consumer receipt transaction.
+ */
+export interface RegisteredExternalConsumer {
+  name: string;
+  eventTypes: readonly OutboxEvent["type"][];
+  handle(event: OutboxEvent): Promise<void>;
+}
+
+/**
  * Contract for a future provider such as Telegram. `prepareAttempt` persists
  * the intent before any HTTP call; `deliver` runs outside a DB transaction;
  * timeouts or ambiguous responses resolve as `unknown`. This runtime does not
@@ -140,6 +151,10 @@ export class UnregisteredEventConsumerError extends Error {
  */
 export class ConsumerRegistry {
   private readonly byType = new Map<string, RegisteredConsumer[]>();
+  private readonly externalByType = new Map<
+    string,
+    RegisteredExternalConsumer[]
+  >();
 
   constructor(
     private readonly repository: DurableRuntimeRepository,
@@ -166,6 +181,28 @@ export class ConsumerRegistry {
     }
   }
 
+  registerExternal(consumer: RegisteredExternalConsumer): void {
+    if (
+      !consumer.name ||
+      typeof consumer.handle !== "function" ||
+      consumer.eventTypes.length === 0
+    ) {
+      throw new Error(
+        "An external consumer needs a name, event type and implementation",
+      );
+    }
+    for (const eventType of consumer.eventTypes) {
+      const current = this.externalByType.get(eventType) ?? [];
+      if (current.some((entry) => entry.name === consumer.name)) {
+        throw new Error(
+          `External consumer ${consumer.name} is already registered for ${eventType}`,
+        );
+      }
+      current.push(consumer);
+      this.externalByType.set(eventType, current);
+    }
+  }
+
   async consume(rawEvent: unknown): Promise<void> {
     if (
       !rawEvent ||
@@ -180,8 +217,9 @@ export class ConsumerRegistry {
     const eventId = (rawEvent as { id: string }).id;
     const event = await this.repository.getEvent(eventId);
     if (!event) throw new Error(`Outbox event ${eventId} no longer exists`);
-    const consumers = this.byType.get(event.type);
-    if (!consumers || consumers.length === 0) {
+    const consumers = this.byType.get(event.type) ?? [];
+    const externalConsumers = this.externalByType.get(event.type) ?? [];
+    if (consumers.length === 0 && externalConsumers.length === 0) {
       this.metrics.increment("consumer.unregistered");
       throw new UnregisteredEventConsumerError(event.type);
     }
@@ -192,6 +230,10 @@ export class ConsumerRegistry {
         (client) => consumer.handle(event, client),
       );
       this.metrics.increment(`consumer.${receipt.state}`);
+    }
+    for (const consumer of externalConsumers) {
+      await consumer.handle(event);
+      this.metrics.increment("consumer.completed");
     }
   }
 

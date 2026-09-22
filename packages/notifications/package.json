@@ -1,21 +1,21 @@
 {
-  "name": "@crashmemory/api",
+  "name": "@crashmemory/notifications",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "demo": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/notifications.test.ts"
   },
   "dependencies": {
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
-    "@crashmemory/notifications": "workspace:*",
+    "@crashmemory/runtime": "workspace:*",
     "@crashmemory/security": "workspace:*",
-    "fastify": "5.12.5",
     "pg": "8.16.3"
   },
   "devDependencies": {
