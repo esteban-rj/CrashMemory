@@ -288,7 +288,7 @@ export class ExtractionService {
       attemptNumber: input.attemptNumber,
       request: {
         instructions:
-          "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible.",
+          "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. Offsets are UTF-16 code units relative to exactly one body or PDF page source. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible.",
         document: sourceText(input.document),
         schemaName: "crashmemory_obligation_extraction",
         schema: modelJsonSchema,
@@ -337,13 +337,21 @@ export class DurableExtractionRunner {
         attemptNumber: 1,
         document,
       });
-      if (result.candidates.length === 0 || result.reviewRequired.length > 0) {
+      if (result.reviewRequired.length > 0) {
         await this.repository.fail(
           job.id,
           job.userId,
           result.reviewRequired[0]?.code ?? "no_candidate",
         );
         return "manual_review";
+      }
+      if (result.candidates.length === 0) {
+        await this.repository.complete({
+          jobId: job.id,
+          userId: job.userId,
+          candidates: [],
+        });
+        return "completed";
       }
       await this.repository.complete({
         jobId: job.id,

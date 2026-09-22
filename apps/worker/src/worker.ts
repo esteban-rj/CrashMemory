@@ -1,4 +1,5 @@
 import { createPool, DurableRuntimeRepository } from "@crashmemory/db";
+import { randomUUID } from "node:crypto";
 import {
   ConsumerRegistry,
   OutboxRelay,
@@ -21,6 +22,19 @@ async function main(): Promise<void> {
   );
   const runtime = new DurableRuntimeRepository(pool);
   const registry = new ConsumerRegistry(runtime);
+  registry.register({
+    name: "extraction.enqueue.v1",
+    eventTypes: ["source.item.revision.created.v1"],
+    handle: async (event, client) => {
+      if (event.type !== "source.item.revision.created.v1") return;
+      await client.query(
+        `INSERT INTO extraction_jobs(id, user_id, source_item_revision_id, privacy_profile, state)
+         VALUES ($1, $2, $3, 'local-only', 'pending')
+         ON CONFLICT (user_id, source_item_revision_id) DO NOTHING`,
+        [randomUUID(), event.userId, event.payload.sourceItemRevisionId],
+      );
+    },
+  });
   const relay = new OutboxRelay(runtime, queue);
   const { worker, connection: workerConnection } = startOutboxWorker({
     redisUrl: required("REDIS_URL"),
