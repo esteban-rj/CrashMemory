@@ -26,6 +26,9 @@ function isJson(request: FastifyRequest): boolean {
   );
 }
 
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 async function mutationSession(
   request: FastifyRequest,
   pool: Pool,
@@ -157,7 +160,11 @@ export function registerLifecycleRoutes(
         .send(error(request, failure[1], failure[2]));
     }
     const body = request.body as { connectionId?: unknown } | null;
-    if (!body || typeof body.connectionId !== "string")
+    if (
+      !body ||
+      typeof body.connectionId !== "string" ||
+      !uuidPattern.test(body.connectionId)
+    )
       return reply
         .code(400)
         .send(error(request, "invalid_request", "connectionId is required"));
@@ -203,7 +210,7 @@ export function registerLifecycleRoutes(
           .send(error(request, failure[1], failure[2]));
       }
       const { connectionId } = request.params as { connectionId?: string };
-      if (!connectionId)
+      if (!connectionId || !uuidPattern.test(connectionId))
         return reply
           .code(400)
           .send(error(request, "invalid_request", "connectionId is required"));
@@ -234,7 +241,12 @@ export function registerLifecycleRoutes(
         connectionId?: string;
         externalMessageId?: string;
       };
-      if (!connectionId || !externalMessageId)
+      if (
+        !connectionId ||
+        !uuidPattern.test(connectionId) ||
+        !externalMessageId ||
+        externalMessageId.length > 1024
+      )
         return reply
           .code(400)
           .send(
@@ -288,7 +300,7 @@ export function registerLifecycleRoutes(
           .send(error(request, failure[1], failure[2]));
       }
       const { obligationId } = request.params as { obligationId?: string };
-      if (!obligationId)
+      if (!obligationId || !uuidPattern.test(obligationId))
         return reply
           .code(400)
           .send(error(request, "invalid_request", "obligationId is required"));

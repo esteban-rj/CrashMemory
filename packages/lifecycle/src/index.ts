@@ -666,7 +666,7 @@ export class LifecycleService {
         [userId],
       ),
       this.pool.query(
-        `SELECT o.id, o.state, v.revision, v.title, v.amount::text AS amount, v.currency, v.due_kind, v.due_date, v.due_at, v.time_zone
+        `SELECT o.id, o.state, v.revision, v.title, v.amount::text AS amount, v.currency, v.due_kind, v.due_date::text AS due_date, v.due_at, v.time_zone
         FROM obligations o LEFT JOIN obligation_versions v ON v.id = o.current_version_id WHERE o.user_id = $1 ORDER BY o.created_at`,
         [userId],
       ),
