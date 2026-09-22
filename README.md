@@ -13,7 +13,9 @@ WEB_PORT=3008 API_INTERNAL_URL=http://127.0.0.1:4318 \
 
 Abra <http://127.0.0.1:3008> e inicie sesión con el usuario creado por `pnpm db:seed`. La sesión usa la cookie HttpOnly emitida por la API y conserva el CSRF recibido en el login; un `401` devuelve la pantalla de acceso. Desde la interfaz puede conectar Gmail, consultar el estado de sincronización, listar obligaciones, abrir el detalle con historial y evidencia autorizada, ver revisiones de extracción, confirmar/corregir/pagar/descartar, resolver conflictos y generar el código de vínculo de Telegram. Las mutaciones envían `Origin`, JSON, CSRF y `expectedVersion`; un `409` refresca el detalle para evitar sobrescribir otra revisión.
 
-El callback público de Gmail usa `/api/v1/gmail/callback` a través del rewrite y la API devuelve `303` a la ruta web. Las acciones de desconexión, borrado y exportación quedan pendientes de las rutas de ciclo de vida V09; esta UI no inventa esos endpoints.
+La pestaña Avisos consulta todos los cursores de `/api/v1/reminders` y permite abrir los intentos de cada aviso (`sent`, `failed` o `unknown`). La lista de obligaciones y revisiones también consume `meta.nextCursor`, por lo que no oculta elementos después de la primera página. Cada evidencia muestra su página cuando aplica, permite leer el texto autorizado y ofrece la descarga autenticada de `/source`.
+
+El callback público de Gmail usa `/api/v1/gmail/callback` a través del rewrite y la API devuelve `303` a la ruta web. Los botones de desconexión Gmail y desvinculación Telegram llaman las rutas de ciclo de vida acordadas; mientras esas rutas no estén integradas responden en la UI como “Acción no disponible todavía.”
 
 ## Reconciliación V06 y API
 

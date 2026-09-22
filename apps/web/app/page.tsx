@@ -130,6 +130,7 @@ export default function HomePage() {
     setReviews([]);
     setReminders([]);
     setAttempts({});
+    setMessage("");
     sessionStorage.removeItem("crashmemory.session");
   }, []);
   const request = useCallback(
@@ -144,7 +145,12 @@ export default function HomePage() {
       });
       if (response.status === 401) {
         clearSession();
-        throw new Error("Tu sesión terminó. Inicia sesión de nuevo.");
+        setLoginError("Tu sesión terminó. Inicia sesión de nuevo.");
+        const error = new Error(
+          "Tu sesión terminó. Inicia sesión de nuevo.",
+        ) as Error & { status?: number };
+        error.status = 401;
+        throw error;
       }
       const payload = (await response
         .json()
@@ -165,7 +171,12 @@ export default function HomePage() {
       const response = await fetch(path, { credentials: "include" });
       if (response.status === 401) {
         clearSession();
-        throw new Error("Tu sesión terminó. Inicia sesión de nuevo.");
+        setLoginError("Tu sesión terminó. Inicia sesión de nuevo.");
+        const error = new Error(
+          "Tu sesión terminó. Inicia sesión de nuevo.",
+        ) as Error & { status?: number };
+        error.status = 401;
+        throw error;
       }
       const payload = (await response
         .json()
@@ -333,10 +344,9 @@ export default function HomePage() {
       await load();
       setMessage("Gmail desconectado. Los datos históricos se conservaron.");
     } catch (error) {
+      const typed = error as Error & { status?: number };
       setMessage(
-        (error as Error).message.includes("No se pudo")
-          ? "La desconexión estará disponible al integrar el ciclo de vida V09."
-          : (error as Error).message,
+        typed.status === 404 ? "Acción no disponible todavía." : typed.message,
       );
     }
   }
@@ -350,10 +360,9 @@ export default function HomePage() {
       await load();
       setMessage("Telegram desvinculado.");
     } catch (error) {
+      const typed = error as Error & { status?: number };
       setMessage(
-        (error as Error).message.includes("No se pudo")
-          ? "La desvinculación estará disponible al integrar el ciclo de vida V09."
-          : (error as Error).message,
+        typed.status === 404 ? "Acción no disponible todavía." : typed.message,
       );
     }
   }
@@ -376,10 +385,11 @@ export default function HomePage() {
         body: "{}",
       });
       setMessage("Sesión cerrada.");
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
       clearSession();
+    } catch (error) {
+      const typed = error as Error & { status?: number };
+      if (typed.status === 401) clearSession();
+      else setMessage(typed.message);
     }
   }
   if (!user)
@@ -855,7 +865,11 @@ function DetailView({
                       date: due,
                       timeZone: current.due.timeZone,
                     }
-                  : { kind: "instant", at: due };
+                  : {
+                      kind: "instant",
+                      at: due,
+                      timeZone: current.due.timeZone,
+                    };
             if (Object.keys(changes).length) onMutate("correct", changes);
             setEditing(false);
           }}
