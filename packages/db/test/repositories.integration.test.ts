@@ -86,6 +86,56 @@ test(
         ["reserved", "unknown"],
       );
       assert.equal(usage.rows[1]?.cost_amount, "0.006000");
+      const ledger = await budgets.listLedger({ userId });
+      assert.deepEqual(
+        ledger.map((entry) => entry.status),
+        ["unknown", "reserved"],
+      );
+      assert.equal(ledger[0]?.costCurrency, "USD");
+    } finally {
+      await pool.query("DELETE FROM users WHERE id = $1", [userId]);
+      await pool.end();
+    }
+  },
+);
+
+test(
+  "model budget periods reject overlapping limits under concurrent inserts",
+  { skip: !databaseUrl },
+  async () => {
+    const pool = createPool(databaseUrl!, { max: 4 });
+    const userId = randomUUID();
+    try {
+      await migrate(pool);
+      await new UserRepository(pool).create({
+        id: userId,
+        emailNormalized: `${userId}@example.test`,
+        passwordHash: await hashPassword("synthetic-overlap-password"),
+        timeZone: "America/Bogota",
+      });
+      const budgets = new ModelBudgetRepository(pool);
+      const set = (periodStart: string, periodEnd: string) =>
+        budgets.setLimit({
+          id: randomUUID(),
+          userId,
+          limitAmountUsd: "10.000000",
+          periodStart: new Date(periodStart),
+          periodEnd: new Date(periodEnd),
+        });
+      const concurrent = await Promise.allSettled([
+        set("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z"),
+        set("2026-10-15T00:00:00Z", "2026-11-15T00:00:00Z"),
+      ]);
+      assert.equal(
+        concurrent.filter((result) => result.status === "fulfilled").length,
+        1,
+      );
+      const rejected = concurrent.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      assert.equal((rejected?.reason as { code?: string }).code, "23P01");
+      await set("2026-11-01T00:00:00Z", "2026-12-01T00:00:00Z");
     } finally {
       await pool.query("DELETE FROM users WHERE id = $1", [userId]);
       await pool.end();

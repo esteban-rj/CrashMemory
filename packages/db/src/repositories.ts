@@ -1362,6 +1362,9 @@ export class ModelBudgetRepository {
     periodStart: Date;
     periodEnd: Date;
   }): Promise<void> {
+    if (input.periodEnd <= input.periodStart) {
+      throw new Error("Model budget period end must be after its start");
+    }
     await this.pool.query(
       `INSERT INTO model_budget_limits(
          id, user_id, currency, limit_amount, period_start, period_end
@@ -1399,8 +1402,13 @@ export class ModelBudgetRepository {
          FOR UPDATE`,
         [input.userId, now],
       );
-      const row = limit.rows[0];
-      if (!row) throw new Error("No active USD model budget is configured");
+      if (limit.rowCount === 0) {
+        throw new Error("No active USD model budget is configured");
+      }
+      if (limit.rowCount !== 1) {
+        throw new Error("Multiple active USD model budgets are configured");
+      }
+      const row = limit.rows[0]!;
 
       const used = await client.query<{ amount: string }>(
         `SELECT COALESCE(sum(
@@ -1482,6 +1490,50 @@ export class ModelBudgetRepository {
     now?: Date;
   }): Promise<void> {
     await this.finish(input, "unknown");
+  }
+
+  async listLedger(input: { userId: string; limit?: number }): Promise<
+    Array<{
+      operationKey: string;
+      entrySequence: number;
+      provider: string;
+      model: string;
+      pricingVersion: string;
+      status: string;
+      inputUnits: number | null;
+      outputUnits: number | null;
+      costAmount: string | null;
+      costCurrency: string | null;
+      createdAt: string;
+    }>
+  > {
+    const limit = input.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error(
+        "Model ledger limit must be an integer from 1 through 100",
+      );
+    }
+    const result = await this.pool.query<Record<string, unknown>>(
+      `SELECT operation_key, entry_sequence, provider, model, pricing_version, status,
+              input_units, output_units, cost_amount::text, cost_currency, created_at
+       FROM model_usage_ledger WHERE user_id = $1
+       ORDER BY created_at DESC, operation_key DESC, entry_sequence DESC LIMIT $2`,
+      [input.userId, limit],
+    );
+    return result.rows.map((row) => ({
+      operationKey: String(row.operation_key),
+      entrySequence: Number(row.entry_sequence),
+      provider: String(row.provider),
+      model: String(row.model),
+      pricingVersion: String(row.pricing_version),
+      status: String(row.status),
+      inputUnits: row.input_units === null ? null : Number(row.input_units),
+      outputUnits: row.output_units === null ? null : Number(row.output_units),
+      costAmount: row.cost_amount === null ? null : String(row.cost_amount),
+      costCurrency:
+        row.cost_currency === null ? null : String(row.cost_currency),
+      createdAt: new Date(String(row.created_at)).toISOString(),
+    }));
   }
 
   private async finish(
