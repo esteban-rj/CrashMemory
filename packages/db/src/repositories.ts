@@ -206,7 +206,12 @@ export class SourceRepository {
     await this.db.query(
       `INSERT INTO encrypted_credentials(
          id, user_id, source_connection_id, key_version, iv, ciphertext, auth_tag
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (source_connection_id) DO UPDATE
+       SET key_version = EXCLUDED.key_version, iv = EXCLUDED.iv,
+           ciphertext = EXCLUDED.ciphertext, auth_tag = EXCLUDED.auth_tag,
+           updated_at = now()
+       WHERE encrypted_credentials.user_id = EXCLUDED.user_id`,
       [
         input.id,
         input.userId,
@@ -216,6 +221,102 @@ export class SourceRepository {
         Buffer.from(input.encrypted.ciphertext, "base64"),
         Buffer.from(input.encrypted.authTag, "base64"),
       ],
+    );
+  }
+
+  async findConnectionByExternalAccount(
+    userId: string,
+    externalAccountId: string,
+  ): Promise<{ id: string; state: string } | null> {
+    const result = await this.db.query(
+      `SELECT id, state FROM source_connections
+       WHERE user_id = $1 AND provider = 'gmail' AND external_account_id = $2`,
+      [userId, externalAccountId],
+    );
+    if (result.rowCount === 0) return null;
+    const row = result.rows[0] as Record<string, unknown>;
+    return { id: String(row.id), state: String(row.state) };
+  }
+
+  async markConnectionAuthorized(
+    userId: string,
+    connectionId: string,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE source_connections
+       SET state = 'active', oauth_authorized_at = now(), last_sync_error_code = NULL,
+           updated_at = now()
+       WHERE id = $1 AND user_id = $2`,
+      [connectionId, userId],
+    );
+  }
+
+  async listConnections(
+    userId: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    const result = await this.db.query(
+      `SELECT id, external_account_id, state, oauth_authorized_at,
+              watch_expiration_at, last_sync_at, last_sync_error_code
+       FROM source_connections WHERE user_id = $1 AND provider = 'gmail'
+       ORDER BY created_at`,
+      [userId],
+    );
+    return result.rows as Array<Record<string, unknown>>;
+  }
+
+  /**
+   * Pub/Sub carries only a wake-up historyId. This stores the wake-up durably
+   * but never updates sync_cursors: the sync must persist its catch-up first.
+   */
+  async recordGmailPushNotification(
+    externalAccountId: string,
+    historyId: string,
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO gmail_push_notifications(
+         source_connection_id, user_id, notification_history_id, received_at
+       )
+       SELECT id, user_id, $2, now()
+       FROM source_connections
+       WHERE provider = 'gmail' AND external_account_id = $1 AND state = 'active'
+       ON CONFLICT (source_connection_id) DO UPDATE
+       SET notification_history_id = EXCLUDED.notification_history_id,
+           received_at = EXCLUDED.received_at`,
+      [externalAccountId, historyId],
+    );
+  }
+
+  async listActiveGmailConnections(): Promise<
+    Array<{
+      id: string;
+      userId: string;
+      cursorValue: string | null;
+      watchExpirationAt: Date | null;
+      hasWakeup: boolean;
+    }>
+  > {
+    const result = await this.db.query(
+      `SELECT c.id, c.user_id, cursor.cursor_value, c.watch_expiration_at,
+              notification.source_connection_id IS NOT NULL AS has_wakeup
+       FROM source_connections c
+       LEFT JOIN sync_cursors cursor ON cursor.source_connection_id = c.id
+       LEFT JOIN gmail_push_notifications notification ON notification.source_connection_id = c.id
+       WHERE c.provider = 'gmail' AND c.state = 'active'
+       ORDER BY c.created_at`,
+    );
+    return result.rows.map((row: Record<string, unknown>) => ({
+      id: String(row.id),
+      userId: String(row.user_id),
+      cursorValue: row.cursor_value === null ? null : String(row.cursor_value),
+      watchExpirationAt: (row.watch_expiration_at as Date | null) ?? null,
+      hasWakeup: row.has_wakeup === true,
+    }));
+  }
+
+  async clearGmailPushNotification(connectionId: string): Promise<void> {
+    await this.db.query(
+      "DELETE FROM gmail_push_notifications WHERE source_connection_id = $1",
+      [connectionId],
     );
   }
 
@@ -678,6 +779,18 @@ export class CursorRepository {
         input.observedAt,
       ],
     );
+  }
+
+  async get(
+    userId: string,
+    sourceConnectionId: string,
+  ): Promise<string | null> {
+    const result = await this.db.query(
+      `SELECT cursor_value FROM sync_cursors
+       WHERE user_id = $1 AND source_connection_id = $2`,
+      [userId, sourceConnectionId],
+    );
+    return result.rowCount === 0 ? null : String(result.rows[0]?.cursor_value);
   }
 }
 
