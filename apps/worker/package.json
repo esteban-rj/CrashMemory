@@ -11,6 +11,8 @@
   "dependencies": {
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
+    "@crashmemory/extraction": "workspace:*",
+    "@crashmemory/model-gateway": "workspace:*",
     "@crashmemory/runtime": "workspace:*"
   }
 }

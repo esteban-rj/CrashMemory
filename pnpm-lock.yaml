@@ -103,6 +103,12 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/extraction':
+        specifier: workspace:*
+        version: link:../../packages/extraction
+      '@crashmemory/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
       '@crashmemory/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime

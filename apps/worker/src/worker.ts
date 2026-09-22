@@ -1,8 +1,24 @@
-import { createPool, DurableRuntimeRepository } from "@crashmemory/db";
+import {
+  createPool,
+  DurableRuntimeRepository,
+  ExtractionRepository,
+  ModelBudgetRepository,
+} from "@crashmemory/db";
 import { randomUUID } from "node:crypto";
+import {
+  DurableExtractionRunner,
+  ExtractionService,
+  PostgresExtractionDocumentLoader,
+} from "@crashmemory/extraction";
+import {
+  loadRemoteModelConfig,
+  ModelGateway,
+  OpenAiResponsesAdapter,
+} from "@crashmemory/model-gateway";
 import {
   ConsumerRegistry,
   OutboxRelay,
+  S3ObjectStorage,
   createOutboxQueue,
   startOutboxWorker,
 } from "@crashmemory/runtime";
@@ -21,6 +37,25 @@ async function main(): Promise<void> {
     required("REDIS_URL"),
   );
   const runtime = new DurableRuntimeRepository(pool);
+  const extractionRepository = new ExtractionRepository(pool);
+  const storage = new S3ObjectStorage({
+    endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
+    bucket: process.env.OBJECT_STORAGE_BUCKET ?? "crashmemory",
+    accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY,
+    secretAccessKey: process.env.OBJECT_STORAGE_SECRET_KEY,
+  });
+  const modelConfig = loadRemoteModelConfig();
+  const runner = new DurableExtractionRunner(
+    new ExtractionService(
+      new ModelGateway({
+        remoteConfig: modelConfig,
+        remote: new OpenAiResponsesAdapter(modelConfig),
+        budget: new ModelBudgetRepository(pool),
+      }),
+    ),
+    extractionRepository,
+    new PostgresExtractionDocumentLoader(pool, extractionRepository, storage),
+  );
   const registry = new ConsumerRegistry(runtime);
   registry.register({
     name: "extraction.enqueue.v1",
@@ -48,6 +83,7 @@ async function main(): Promise<void> {
     await queue.close();
     await workerConnection.quit();
     await queueConnection.quit();
+    clearInterval(extractionTimer);
     await pool.end();
   };
   worker.on("error", (error) => {
@@ -63,6 +99,8 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown());
   const replayed = await relay.recoverFromPostgres();
   const dispatched = await relay.dispatchPending();
+  await extractionRepository.recoverExpired();
+  const extractionTimer = setInterval(() => void runner.runOne(), 1_000);
   console.log(
     JSON.stringify({
       component: "worker",
