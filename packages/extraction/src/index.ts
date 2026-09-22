@@ -13,6 +13,11 @@ import {
 } from "@crashmemory/model-gateway";
 import { z } from "zod";
 import { ExtractionRepository } from "@crashmemory/db";
+import { SourceRepository, type Queryable } from "@crashmemory/db";
+import {
+  AuthorizedBlobStorage,
+  type ObjectStorage,
+} from "@crashmemory/runtime";
 
 export interface TextSource {
   text: string;
@@ -373,6 +378,67 @@ export class DurableExtractionRunner {
       await this.repository.fail(job.id, job.userId, code);
       return "manual_review";
     }
+  }
+}
+
+/** Loads only owner-authorized persisted Gmail bytes and saves PDF text artifacts. */
+export class PostgresExtractionDocumentLoader {
+  private readonly blobs: AuthorizedBlobStorage;
+
+  constructor(
+    private readonly db: Queryable,
+    private readonly repository: ExtractionRepository,
+    storage: ObjectStorage,
+  ) {
+    this.blobs = new AuthorizedBlobStorage(storage, new SourceRepository(db));
+  }
+
+  async load(
+    userId: string,
+    sourceItemRevisionId: string,
+  ): Promise<ExtractionDocument | null> {
+    const sources = new SourceRepository(this.db);
+    const input = await sources.getExtractionInput(
+      userId,
+      sourceItemRevisionId,
+    );
+    if (!input) return null;
+    const bodyBytes = await this.blobs.read(userId, input.body.blobId);
+    if (!bodyBytes) return null;
+    const user = await this.db.query<{ time_zone: string }>(
+      "SELECT time_zone FROM users WHERE id = $1",
+      [userId],
+    );
+    if (user.rowCount !== 1) return null;
+    const pdfPages: PdfPageText[] = [];
+    for (const attachment of input.attachments.filter(
+      (item) => item.mediaType === "application/pdf",
+    )) {
+      const bytes = await this.blobs.read(userId, attachment.blobId);
+      if (!bytes) continue;
+      const parsed = await parseTextPdf(bytes);
+      const pages = parsed.pages.map((text, index) => ({
+        attachmentId: attachment.id,
+        page: index + 1,
+        text,
+        contentSha256: sha256Text(text),
+      }));
+      await this.repository.savePdfPages({
+        userId,
+        sourceItemRevisionId,
+        pages,
+      });
+      pdfPages.push(...pages);
+    }
+    return {
+      sourceItemRevisionId,
+      body: {
+        text: Buffer.from(bodyBytes).toString("utf8"),
+        contentSha256: input.body.contentSha256,
+      },
+      pdfPages,
+      userTimeZone: user.rows[0]!.time_zone,
+    };
   }
 }
 

@@ -149,6 +149,9 @@ importers:
       '@crashmemory/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@crashmemory/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       pdfjs-dist:
         specifier: 5.4.624
         version: 5.4.624

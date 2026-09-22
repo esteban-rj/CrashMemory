@@ -1235,6 +1235,35 @@ export class ExtractionRepository {
     );
   }
 
+  async savePdfPages(input: {
+    userId: string;
+    sourceItemRevisionId: string;
+    pages: Array<{
+      attachmentId: string;
+      page: number;
+      text: string;
+      contentSha256: string;
+    }>;
+  }): Promise<void> {
+    await inTransaction(this.pool, async (client) => {
+      for (const page of input.pages) {
+        await client.query(
+          `INSERT INTO extraction_pdf_pages(id, user_id, source_item_revision_id, attachment_id, page, extracted_text, content_sha256)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (attachment_id, page) DO NOTHING`,
+          [
+            randomUUID(),
+            input.userId,
+            input.sourceItemRevisionId,
+            page.attachmentId,
+            page.page,
+            page.text,
+            page.contentSha256,
+          ],
+        );
+      }
+    });
+  }
+
   async claimNext(): Promise<{
     id: string;
     userId: string;
