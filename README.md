@@ -1,6 +1,6 @@
-# CrashMemory — Extracción verificable V05
+# CrashMemory — Gmail y extracción verificable
 
-CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V05 añade ModelGateway, presupuesto duradero y extracción de candidatos verificables desde cuerpo/PDF de texto. Gmail, reconciliación y Telegram aún no están conectados entre sí.
+CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 extrae candidatos verificables desde cuerpo y PDF de texto. La reconciliación y Telegram continúan pendientes.
 
 ## Requisitos
 
@@ -13,7 +13,22 @@ Instale exactamente el lockfile antes del primer arranque:
 pnpm install --frozen-lockfile
 ```
 
-## Base local aislada
+## Entorno local V04
+
+V04 usa un namespace propio para PostgreSQL, Redis y MinIO. Arranque PostgreSQL y aplique las migraciones, incluida `0004_v04_gmail_sync.sql`:
+
+```bash
+COMPOSE_PROJECT_NAME=crashmemory-v04 POSTGRES_PORT=54332 POSTGRES_DB=crashmemory_v04 \
+REDIS_PORT=6392 MINIO_PORT=9015 MINIO_CONSOLE_PORT=9016 \
+  docker compose -f infra/compose/docker-compose.yml up -d postgres --wait
+
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
+  pnpm db:migrate
+```
+
+Para ejecutar API y scheduler en esta base use `API_PORT=4314`, `APP_ORIGIN=http://127.0.0.1:3004`, `APP_SESSION_COOKIE_NAME=crashmemory_v04_session`, el mismo `DATABASE_URL`, y `REDIS_URL=redis://127.0.0.1:6392`. Antes de habilitar Gmail real, cree un usuario sintético con el comando de la sección siguiente y configure las variables OAuth descritas en [Gmail V04](#gmail-v04).
+
+## Entorno histórico V03
 
 La configuración de ejemplo reserva el proyecto Compose `crashmemory-v03`, PostgreSQL `54331`, Redis `6391`, MinIO `9013/9014`, API `4312` y web `3002`. Los servicios sólo publican en loopback. Para levantar PostgreSQL y aplicar las migraciones ejecutadas en esta entrega:
 
@@ -39,7 +54,7 @@ docker compose -p crashmemory-v03 \
 
 Este último comando elimina la base y el volumen local V02. No es una migración inversa ni debe apuntar a otro proyecto Compose.
 
-## Usuario local y login
+## Autenticación compatible V02
 
 No existe registro público. Cree un usuario sintético leyendo la contraseña desde el entorno del proceso; el seed no imprime ni guarda la contraseña en Git:
 
@@ -88,7 +103,7 @@ CREDENTIAL_ENCRYPTION_KEYS_JSON={"v1":"BASE64_DE_32_BYTES"}
 OAUTH_STATE_SECRET_BASE64=BASE64_DE_32_BYTES_O_MAS
 ```
 
-`.env.example` deja esas variables vacías. El estado OAuth firmado sólo admite rutas locales, incluye usuario y sesión, y usa un nonce persistido que se consume atómicamente una sola vez. V04 conectará esta primitiva al callback Gmail. Los logs Fastify redactan cookies, autorización, contraseñas, tokens y ciphertext; no registran cuerpos de solicitudes.
+`.env.example` deja esas variables vacías. El estado OAuth firmado sólo admite rutas locales, incluye usuario y sesión, y usa un nonce persistido que se consume atómicamente una sola vez. V04 usa esa primitiva tanto en el inicio como en el callback Gmail. Los logs Fastify redactan cookies, autorización, contraseñas, tokens y ciphertext; no registran cuerpos de solicitudes.
 
 ## Modelo persistente
 
@@ -157,41 +172,59 @@ TEST_OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
 
 Las nueve pruebas cubren commit→fallo de enqueue→replay, flush de Redis→recovery, caída entre efecto DB/ACK sin duplicar, dos workers, cursor con microsegundos, evento canónico rehidratado desde PostgreSQL, namespace/hash/bytes y MinIO real.
 
-## Extracción V05, privacidad y coste
-
-`@crashmemory/extraction` consume la [entrada persistida de extracción](docs/contracts/extraction-input-v1.md): cuerpo normalizado y adjuntos del mismo usuario y revisión. Sólo considera PDF con texto; `parseTextPdf` extrae streams simples por página. Un PDF escaneado, cifrado o no compatible devuelve `pdf_requires_manual_review`; V05 no ofrece OCR ni crea una obligación a partir de ese resultado.
-
-Cada candidato requiere título, importe positivo con moneda ISO, vencimiento y offsets UTF-16. Esos offsets se verifican de nuevo contra el texto y SHA-256 exactos antes de generar evidencia. Un `$` sin moneda, JSON inválido, evidencia fuera de rango o ambigüedad pasa a revisión manual. El correo/PDF se delimita como dato no confiable: sus instrucciones no alteran el prompt ni se aceptan como evidencia.
-
-`local-only` nunca crea una solicitud HTTP, incluso si falla su adaptador local. `remote-allowed` queda bloqueado hasta que un `.env` ignorado contenga `MODEL_REMOTE_ENABLED=true`, `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true` y una clave. La confirmación registra que el proyecto API no tiene opt-in de compartición o entrenamiento. El adaptador sólo acepta OpenAI Responses con `gpt-5.6-terra`, esfuerzo `medium`, `store:false`, una llamada foreground y sin fallback ni reintentos ocultos. `store:false` no implica Zero Data Retention: CrashMemory no afirma ZDR; los controles de retención/monitoreo de abuso se administran aparte conforme al [ADR 0002](docs/adr/0002-remote-model-privacy.md).
-
-`DurableExtractionRunner` reclama un `extraction_job`, carga sólo la revisión autorizada, ejecuta el modelo fuera de transacciones y, al terminar, persiste páginas PDF, evidencia y candidatos junto con el evento `obligation.candidate.created.v1`. V06 consume esos candidatos; no se confirma ninguna obligación en V05.
-
-Antes de cada petición remota, `ModelBudgetRepository.reserve` bloquea el presupuesto USD y reserva el máximo del JSON completo enviado (instrucciones, documento y esquema), limitado por `MODEL_MAX_INPUT_TOKENS` y `MODEL_MAX_OUTPUT_TOKENS`. Las tarifas por millón son versionadas y configurables. La respuesta con uso queda `estimated`; sin uso se conserva la estimación conservadora. Un timeout o fallo de transporte queda `unknown` y mantiene su reserva, nunca se muestra como coste cero. El ledger guarda sólo proveedor, modelo, versión, unidades y coste; no guarda correo, PDF, prompt, respuesta ni credencial.
-
-El presupuesto se configura mediante la API de código `new ModelBudgetRepository(pool).setLimit(...)`; aún no existe endpoint HTTP. Con el PostgreSQL aislado de este worktree, compruebe el presupuesto/ledger y los perfiles sin enviar datos ni necesitar clave API:
-
-```bash
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
-  pnpm --filter @crashmemory/db test
-
-pnpm --filter @crashmemory/model-gateway test
-pnpm --filter @crashmemory/extraction test
-```
-
 ## Límites actuales
 
-V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. Tampoco implementa OAuth Gmail, reconciliación, Telegram, borrado/exportación o pantallas de gestión. ObjectStorage persiste originales autorizados, pero V09 define el borrado y barreras contra resurrección.
+V04 no implementa registro/recuperación de contraseña, extracción, reconciliación, Telegram, borrado/exportación ni pantallas de gestión. ObjectStorage persiste originales autorizados, pero V09 define el borrado y barreras contra resurrección. No hay garantía exactly-once para HTTP externo: V07 persistirá intentos antes de Telegram y resolverá la ambigüedad como `unknown`.
 
 La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.md) fija para V05 `gpt-5.6-terra` configurable con esfuerzo `medium`, `store: false`, confirmación explícita del proyecto y bloqueo total de red para `local-only`. Distingue la política de no entrenamiento de la retención de monitoreo de abuso y no presume ZDR.
 
 ## Estado
 
-| Hito    | Resultado                                                    | Estado                                                |
-| ------- | ------------------------------------------------------------ | ----------------------------------------------------- |
-| V01     | Contratos, demo, monorepo, Compose y CI                      | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
-| V02     | Memoria segura, repositorios y autenticación                 | Integrada en `origin/main` (`597fd87`).               |
-| V03     | Runtime durable                                              | Integrada en `origin/main` (`c098b6d`).               |
-| V04     | Gmail                                                        | En desarrollo.                                        |
-| V05     | ModelGateway, presupuesto, parsers y candidatos verificables | En validación para integración.                       |
-| V06–V10 | Reconciliación, Telegram, web, ciclo de vida y validación    | Pendiente.                                            |
+| Hito    | Resultado                                                 | Estado                                                |
+| ------- | --------------------------------------------------------- | ----------------------------------------------------- |
+| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
+| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
+| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
+| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en esta entrega.                            |
+| V05     | ModelGateway, presupuesto y extracción verificable        | Integrada en `origin/main` (`55d9207`).               |
+| V06–V10 | Reconciliación, Telegram, web, ciclo de vida y validación | Pendiente.                                            |
+
+## Gmail V04
+
+Registre en Google Cloud una URI de redirección exacta que termine en `/api/v1/gmail/callback`. Configure únicamente el scope `https://www.googleapis.com/auth/gmail.readonly`; este proyecto no solicita `modify` ni `mail.google.com`. Mantenga el cliente OAuth, el keyring de credenciales y la clave de estado fuera de Git:
+
+```dotenv
+GMAIL_CLIENT_ID=outside-git
+GMAIL_CLIENT_SECRET=outside-git
+GMAIL_REDIRECT_URI=http://127.0.0.1:4314/api/v1/gmail/callback
+CREDENTIAL_ACTIVE_KEY_VERSION=v1
+CREDENTIAL_ENCRYPTION_KEYS_JSON={"v1":"base64-32-byte-key"}
+OAUTH_STATE_SECRET_BASE64=base64-32-byte-key
+GOOGLE_PUBSUB_AUDIENCE=expected-push-oidc-audience
+GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL=pubsub-push@project.iam.gserviceaccount.com
+GMAIL_PUBSUB_TOPIC=projects/project/topics/crashmemory-gmail
+GMAIL_SYNC_ENABLED=true
+```
+
+Con una sesión local ya iniciada, `POST /api/v1/gmail/connect` exige `Origin`, `Content-Type: application/json` y `X-CSRF-Token`; devuelve una URL de consentimiento de Google con `prompt=consent` para obtener un refresh token también al reconectar. El callback exige además la misma cookie de sesión activa que emitió el estado firmado, antes de consumir su nonce. Las credenciales se cifran vinculadas a usuario y conexión. Un `invalid_grant`, la expiración de un refresh token de una app en modo testing o una revocación dejan la conexión en error y requieren volver a autorizarla.
+
+El conector limita el bootstrap a 200 mensajes. Captura el `historyId` antes del histórico y hace catch-up después; cada página persiste revisiones, cuerpo normalizado UTF-8, adjuntos y el evento `source.item.revision.created.v1` en una transacción antes de confirmar el cursor. Replays y notificaciones reordenadas son seguros. Un HTTP 404 de `history.list` marca un resync explícito y nunca expande la ventana autorizada en silencio. El watch se debe renovar a diario; el polling incremental desde el cursor confirmado queda como respaldo para avisos perdidos.
+
+El webhook `POST /webhooks/google/gmail` acepta una notificación Pub/Sub sólo con OIDC cuyo `aud` coincide con `GOOGLE_PUBSUB_AUDIENCE`, cuyo emisor es Google y cuyo correo verificado coincide con `GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL`. Persiste la señal `historyId` como disparador durable y no mueve `sync_cursors`; únicamente el catch-up que ya guardó todas sus páginas puede hacerlo. Configure en Pub/Sub la misma audiencia y la URL pública HTTPS del webhook. El cuerpo de un correo, adjuntos y tokens no se registran en logs.
+
+El scheduler ejecuta el conector real cuando `GMAIL_SYNC_ENABLED=true`: descifra el refresh token, obtiene un access token, consume wakeups, hace polling incremental de respaldo, recupera un `historyId` vencido con resync limitado y renueva watch durante las 48 horas previas a su expiración. `GMAIL_SYNC_INTERVAL_MS` predetermina cinco minutos; el watch se renueva diariamente bajo esa política. Si Google devuelve `invalid_grant`, conserva el wakeup y deja la conexión en `error` para que el usuario la vuelva a autorizar.
+
+La verificación V04 se ejecutó con PostgreSQL aislado en `54332`:
+
+```bash
+COMPOSE_PROJECT_NAME=crashmemory-v04 POSTGRES_PORT=54332 POSTGRES_DB=crashmemory_v04 \
+REDIS_PORT=6392 MINIO_PORT=9015 MINIO_CONSOLE_PORT=9016 \
+  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d postgres --wait
+
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
+  pnpm --filter @crashmemory/db test
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
+  pnpm --filter @crashmemory/api test
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
+  pnpm --filter @crashmemory/gmail test
+```

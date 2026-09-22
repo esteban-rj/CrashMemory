@@ -61,7 +61,10 @@ export function verifySessionCsrf(
   return typeof csrf === "string" && safeTokenEqual(csrf, csrfTokenHash);
 }
 
-function isTrustedOrigin(request: FastifyRequest, appOrigin: string): boolean {
+export function isTrustedOrigin(
+  request: FastifyRequest,
+  appOrigin: string,
+): boolean {
   const origin = request.headers.origin;
   return origin === undefined || origin === appOrigin;
 }

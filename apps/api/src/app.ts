@@ -2,11 +2,13 @@ import Fastify, { type FastifyServerOptions } from "fastify";
 import type { Pool } from "pg";
 import { CONTRACT_VERSION, demoObligation } from "@crashmemory/contracts";
 import { registerAuthRoutes, type AuthConfig } from "./auth.ts";
+import { registerGmailRoutes, type GmailRouteConfig } from "./gmail.ts";
 
 export function buildApp(
   options: {
     pool?: Pool;
     auth?: AuthConfig;
+    gmail?: GmailRouteConfig;
     logger?: FastifyServerOptions["logger"];
   } = {},
 ) {
@@ -55,6 +57,7 @@ export function buildApp(
 
   if (options.pool && options.auth) {
     registerAuthRoutes(app, options.pool, options.auth);
+    registerGmailRoutes(app, options.pool, options.auth, options.gmail);
   } else {
     app.post("/api/v1/auth/login", async (request, reply) =>
       reply.code(503).send({

@@ -1,8 +1,11 @@
 import { buildApp } from "./app.ts";
-import { createPool } from "@crashmemory/db";
+import { SourceRepository, createPool } from "@crashmemory/db";
+import { createGooglePubSubTokenVerifier } from "./gmail.ts";
 import type { FastifyServerOptions } from "fastify";
 import {
+  CredentialCipher,
   FASTIFY_REDACT_PATHS,
+  OAuthStateSigner,
   safeErrorSerializer,
   safeRequestSerializer,
 } from "@crashmemory/security";
@@ -18,6 +21,14 @@ const loggerOptions = {
     err: safeErrorSerializer,
   },
 } as unknown as Exclude<FastifyServerOptions["logger"], boolean>;
+const gmailConfigured = Boolean(
+  process.env.GMAIL_CLIENT_ID &&
+  process.env.GMAIL_CLIENT_SECRET &&
+  process.env.GMAIL_REDIRECT_URI &&
+  process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON &&
+  process.env.CREDENTIAL_ACTIVE_KEY_VERSION &&
+  process.env.OAUTH_STATE_SECRET_BASE64,
+);
 const app = buildApp({
   pool,
   ...(pool
@@ -30,6 +41,43 @@ const app = buildApp({
           sessionTtlSeconds: Number(
             process.env.APP_SESSION_TTL_SECONDS ?? 43_200,
           ),
+        },
+      }
+    : {}),
+  ...(pool && gmailConfigured
+    ? {
+        gmail: {
+          clientId: process.env.GMAIL_CLIENT_ID!,
+          clientSecret: process.env.GMAIL_CLIENT_SECRET!,
+          redirectUri: process.env.GMAIL_REDIRECT_URI!,
+          stateSigner: new OAuthStateSigner(
+            Buffer.from(process.env.OAUTH_STATE_SECRET_BASE64!, "base64"),
+          ),
+          credentialCipher: CredentialCipher.fromEnvironment(
+            process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON,
+            process.env.CREDENTIAL_ACTIVE_KEY_VERSION,
+          ),
+          ...(process.env.GOOGLE_PUBSUB_AUDIENCE &&
+          process.env.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL
+            ? {
+                verifyPushToken: createGooglePubSubTokenVerifier(
+                  process.env.GOOGLE_PUBSUB_AUDIENCE,
+                  process.env.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL,
+                ),
+                onPushNotification: async (notification: {
+                  emailAddress: string;
+                  historyId: string;
+                }) => {
+                  await new SourceRepository(pool!).recordGmailPushNotification(
+                    notification.emailAddress
+                      .normalize("NFKC")
+                      .trim()
+                      .toLowerCase(),
+                    notification.historyId,
+                  );
+                },
+              }
+            : {}),
         },
       }
     : {}),

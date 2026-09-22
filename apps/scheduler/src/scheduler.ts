@@ -1,5 +1,7 @@
 import { createPool, DurableRuntimeRepository } from "@crashmemory/db";
+import { PostgresGmailSyncRunner } from "@crashmemory/gmail/runner";
 import { OutboxRelay, createOutboxQueue } from "@crashmemory/runtime";
+import { CredentialCipher } from "@crashmemory/security";
 
 function required(name: "DATABASE_URL" | "REDIS_URL"): string {
   const value = process.env[name];
@@ -17,12 +19,58 @@ function intervalMs(): number {
   return value;
 }
 
+function gmailSyncIntervalMs(): number {
+  const value = Number(process.env.GMAIL_SYNC_INTERVAL_MS ?? "300000");
+  if (!Number.isInteger(value) || value < 60_000 || value > 86_400_000) {
+    throw new Error(
+      "GMAIL_SYNC_INTERVAL_MS must be an integer from 60000 to 86400000",
+    );
+  }
+  return value;
+}
+
+function gmailRunner(
+  pool: ReturnType<typeof createPool>,
+): PostgresGmailSyncRunner | undefined {
+  if (process.env.GMAIL_SYNC_ENABLED !== "true") return undefined;
+  const requiredNames = [
+    "GMAIL_CLIENT_ID",
+    "GMAIL_CLIENT_SECRET",
+    "GMAIL_PUBSUB_TOPIC",
+    "CREDENTIAL_ENCRYPTION_KEYS_JSON",
+    "CREDENTIAL_ACTIVE_KEY_VERSION",
+    "OBJECT_STORAGE_BUCKET",
+  ] as const;
+  for (const name of requiredNames) {
+    if (!process.env[name])
+      throw new Error(`${name} is required when GMAIL_SYNC_ENABLED=true`);
+  }
+  return new PostgresGmailSyncRunner(pool, {
+    clientId: process.env.GMAIL_CLIENT_ID!,
+    clientSecret: process.env.GMAIL_CLIENT_SECRET!,
+    pubsubTopic: process.env.GMAIL_PUBSUB_TOPIC!,
+    credentialCipher: CredentialCipher.fromEnvironment(
+      process.env.CREDENTIAL_ENCRYPTION_KEYS_JSON,
+      process.env.CREDENTIAL_ACTIVE_KEY_VERSION,
+    ),
+    objectStorage: {
+      endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
+      bucket: process.env.OBJECT_STORAGE_BUCKET!,
+      accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY,
+      secretAccessKey: process.env.OBJECT_STORAGE_SECRET_KEY,
+    },
+  });
+}
+
 async function main(): Promise<void> {
   const pool = createPool(required("DATABASE_URL"), {
     application_name: "crashmemory-v03-scheduler",
   });
   const { queue, connection } = createOutboxQueue(required("REDIS_URL"));
   const relay = new OutboxRelay(new DurableRuntimeRepository(pool), queue);
+  const gmail = gmailRunner(pool);
+  const gmailInterval = gmail ? gmailSyncIntervalMs() : 0;
+  let lastGmailRun = 0;
   let stopping = false;
   let running = false;
   const tick = async (): Promise<void> => {
@@ -37,6 +85,17 @@ async function main(): Promise<void> {
             event: "dispatched",
             count: dispatched,
             metrics: relay.getMetrics(),
+          }),
+        );
+      }
+      if (gmail && Date.now() - lastGmailRun >= gmailInterval) {
+        lastGmailRun = Date.now();
+        const synchronized = await gmail.runOnce();
+        console.log(
+          JSON.stringify({
+            component: "scheduler",
+            event: "gmail_sync_completed",
+            connections: synchronized,
           }),
         );
       }
