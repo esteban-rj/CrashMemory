@@ -8,7 +8,7 @@ V06 conserva un ID lógico por factura con emisor y número de factura/recibo/li
 
 La [referencia HTTP V06](docs/contracts/reconciliation-http-v1.md) detalla rutas, cuerpos, estados y errores para la web V08. `GET /api/v1/obligations` lista con cursor; `GET /api/v1/obligations/:id` ofrece histórico, evidencia, conflictos y campos protegidos. `GET /api/v1/evidence/:id`, `/text` y `/source` dan cita, texto y soporte PDF/cuerpo tras comprobar el dueño. `GET /api/v1/extraction/reviews` muestra PDFs escaneados o trabajos bloqueados con un código saneado, sin crear obligaciones ficticias. `POST` sobre `/confirm`, `/correct`, `/discard`, `/pay` y `/resolve` exige cookie, origen, JSON, CSRF y `expectedVersion`; una versión obsoleta devuelve 409.
 
-En este host se levantó el namespace aislado V06 y se aplicó desde cero la migración `0008_v06_reconciliation.sql` (el número `0007` permanece reservado):
+En este host se levantó el namespace aislado V06 y se aplicó desde cero la cadena, incluido `0007_v05_model_budget_periods.sql` de V05 y `0008_v06_reconciliation.sql`:
 
 ```bash
 COMPOSE_PROJECT_NAME=crashmemory-v06 POSTGRES_DB=crashmemory_v06 POSTGRES_PORT=54336 \
@@ -258,15 +258,22 @@ TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemo
 
 Antes de cada petición remota, `ModelBudgetRepository.reserve` bloquea el presupuesto USD y reserva el máximo del JSON completo enviado (instrucciones, documento y esquema), limitado por `MODEL_MAX_INPUT_TOKENS` y `MODEL_MAX_OUTPUT_TOKENS`. Las tarifas por millón son versionadas y configurables. La respuesta con uso queda `estimated`; sin uso se conserva la estimación conservadora. Un timeout o fallo de transporte queda `unknown` y mantiene su reserva, nunca se muestra como coste cero. El ledger guarda sólo proveedor, modelo, versión, unidades y coste; no guarda correo, PDF, prompt, respuesta ni credencial.
 
-El presupuesto se configura mediante la API de código `new ModelBudgetRepository(pool).setLimit(...)`; aún no existe endpoint HTTP. Con el PostgreSQL aislado de este worktree, compruebe el presupuesto/ledger y los perfiles sin enviar datos ni necesitar clave API:
+El presupuesto se configura por CLI local, sin endpoint HTTP ni llamada a proveedor. Cree o identifique primero un usuario sintético local con `pnpm db:seed` y copie el UUID que informa. Use instantes UTC exactos con formato `YYYY-MM-DDTHH:mm:ssZ` y ajuste el período para que contenga la fecha de ejecución: fuera del período no habrá límite activo y la reserva remota queda bloqueada. Reemplace el UUID y la URL por los de su base antes de ejecutar:
 
 ```bash
-TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
-  pnpm --filter @crashmemory/db test
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
+  pnpm --filter @crashmemory/db budget:set -- \
+  --user-id '00000000-0000-4000-8000-000000000001' \
+  --limit-usd '25.00' \
+  --period-start '2026-09-01T00:00:00Z' \
+  --period-end '2026-10-01T00:00:00Z'
 
-pnpm --filter @crashmemory/model-gateway test
-pnpm --filter @crashmemory/extraction test
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54339/crashmemory_i001_v05 \
+  pnpm --filter @crashmemory/db budget:ledger -- \
+  --user-id '00000000-0000-4000-8000-000000000001' --limit 25
 ```
+
+El primer comando valida decimales exactos e instantes UTC reales, imprime el límite creado sin credenciales ni contenido de correo y rechaza intervalos solapados para el mismo usuario. El segundo devuelve sólo proveedor, modelo, versión de precio, estado, unidades, coste, secuencia y fecha; no devuelve prompts, documentos, respuestas ni secretos. Un período sin límite aplicable, o una base heredada con más de un período aplicable, bloquea la reserva.
 
 ## Avisos Telegram V07
 
@@ -301,16 +308,16 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 
 ## Estado
 
-| Hito    | Resultado                                                 | Estado                                                |
-| ------- | --------------------------------------------------------- | ----------------------------------------------------- |
-| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
-| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
-| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
-| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).               |
-| V05     | ModelGateway, presupuesto y worker de extracción          | Integrada en esta entrega; validación real pendiente. |
-| V06     | Reconciliación                                            | Pendiente.                                            |
-| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).               |
-| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                            |
+| Hito    | Resultado                                                 | Estado                                                                            |
+| ------- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.                             |
+| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).                                           |
+| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                                           |
+| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                                           |
+| V05     | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
+| V06     | Reconciliación                                            | Pendiente.                                                                        |
+| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
+| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                                                        |
 
 ## Gmail V04
 

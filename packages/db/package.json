@@ -9,9 +9,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --import tsx test/repositories.integration.test.ts",
+    "test": "node --test --import tsx test/*.test.ts",
     "migrate": "tsx src/cli/migrate.ts",
-    "seed": "tsx src/cli/seed.ts"
+    "seed": "tsx src/cli/seed.ts",
+    "budget:set": "tsx src/cli/model-budget.ts set",
+    "budget:ledger": "tsx src/cli/model-budget.ts ledger"
   },
   "dependencies": {
     "@crashmemory/canonical-model": "workspace:*",
