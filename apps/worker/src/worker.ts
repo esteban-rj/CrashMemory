@@ -4,7 +4,6 @@ import {
   ExtractionRepository,
   ModelBudgetRepository,
 } from "@crashmemory/db";
-import { randomUUID } from "node:crypto";
 import {
   DurableExtractionRunner,
   ExtractionService,
@@ -22,6 +21,7 @@ import {
   createOutboxQueue,
   startOutboxWorker,
 } from "@crashmemory/runtime";
+import { registerExtractionConsumer } from "./extraction-consumer.ts";
 
 function required(name: "DATABASE_URL" | "REDIS_URL"): string {
   const value = process.env[name];
@@ -57,19 +57,7 @@ async function main(): Promise<void> {
     new PostgresExtractionDocumentLoader(pool, extractionRepository, storage),
   );
   const registry = new ConsumerRegistry(runtime);
-  registry.register({
-    name: "extraction.enqueue.v1",
-    eventTypes: ["source.item.revision.created.v1"],
-    handle: async (event, client) => {
-      if (event.type !== "source.item.revision.created.v1") return;
-      await client.query(
-        `INSERT INTO extraction_jobs(id, user_id, source_item_revision_id, privacy_profile, state)
-         VALUES ($1, $2, $3, 'local-only', 'pending')
-         ON CONFLICT (user_id, source_item_revision_id) DO NOTHING`,
-        [randomUUID(), event.userId, event.payload.sourceItemRevisionId],
-      );
-    },
-  });
+  registerExtractionConsumer(registry);
   const relay = new OutboxRelay(runtime, queue);
   const { worker, connection: workerConnection } = startOutboxWorker({
     redisUrl: required("REDIS_URL"),
@@ -113,7 +101,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const code = error instanceof Error ? error.name : "runtime_error";
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String(error.code)
+      : error instanceof Error
+        ? error.name
+        : "runtime_error";
   console.error(
     JSON.stringify({ component: "worker", event: "startup_failed", code }),
   );

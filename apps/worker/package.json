@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "tsx watch src/worker.ts",
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx test/**/*.test.ts"
   },
   "dependencies": {
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
     "@crashmemory/extraction": "workspace:*",
+    "@crashmemory/gmail": "workspace:*",
     "@crashmemory/model-gateway": "workspace:*",
     "@crashmemory/runtime": "workspace:*"
   }

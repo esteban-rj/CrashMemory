@@ -1390,10 +1390,11 @@ export class ExtractionRepository {
   }
 
   async recoverExpired(now = new Date(), leaseMs = 60_000): Promise<number> {
+    const expiresAt = new Date(now.getTime() - leaseMs);
     const result = await this.pool.query(
       `UPDATE extraction_jobs SET state = 'manual_review', completed_at = $1, claimed_at = NULL, last_error_code = 'lease_expired'
-       WHERE state = 'running' AND claimed_at < ($1 - ($2::bigint * interval '1 millisecond'))`,
-      [now, leaseMs],
+       WHERE state = 'running' AND claimed_at < $2`,
+      [now, expiresAt],
     );
     return result.rowCount ?? 0;
   }

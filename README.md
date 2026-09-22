@@ -13,24 +13,24 @@ Instale exactamente el lockfile antes del primer arranque:
 pnpm install --frozen-lockfile
 ```
 
-## Entorno local V04
+## Entorno local V05
 
-V04 usa un namespace propio para PostgreSQL, Redis y MinIO. Arranque PostgreSQL y aplique las migraciones, incluida `0004_v04_gmail_sync.sql`:
+La verificación actual usa un solo namespace V05: PostgreSQL `54335`, Redis `6395` y MinIO `9017/9018`. Los servicios sólo publican en loopback. Arranque los tres y aplique todas las migraciones, incluidas `0003_v05_model_budget.sql`, `0004_v04_gmail_sync.sql` y `0005_v05_extraction_hardening.sql`:
 
 ```bash
-COMPOSE_PROJECT_NAME=crashmemory-v04 POSTGRES_PORT=54332 POSTGRES_DB=crashmemory_v04 \
-REDIS_PORT=6392 MINIO_PORT=9015 MINIO_CONSOLE_PORT=9016 \
-  docker compose -f infra/compose/docker-compose.yml up -d postgres --wait
+COMPOSE_PROJECT_NAME=crashmemory-v05 POSTGRES_PORT=54335 POSTGRES_DB=crashmemory_v05 \
+REDIS_PORT=6395 MINIO_PORT=9017 MINIO_CONSOLE_PORT=9018 \
+  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d --wait
 
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54332/crashmemory_v04 \
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54335/crashmemory_v05 \
   pnpm db:migrate
 ```
 
-Para ejecutar API y scheduler en esta base use `API_PORT=4314`, `APP_ORIGIN=http://127.0.0.1:3004`, `APP_SESSION_COOKIE_NAME=crashmemory_v04_session`, el mismo `DATABASE_URL`, y `REDIS_URL=redis://127.0.0.1:6392`. Antes de habilitar Gmail real, cree un usuario sintético con el comando de la sección siguiente y configure las variables OAuth descritas en [Gmail V04](#gmail-v04).
+Las secciones V02 y V03 que siguen documentan pruebas históricas y sus namespaces originales; no son la configuración de ejecución actual.
 
 ## Entorno histórico V03
 
-La configuración de ejemplo reserva el proyecto Compose `crashmemory-v03`, PostgreSQL `54331`, Redis `6391`, MinIO `9013/9014`, API `4312` y web `3002`. Los servicios sólo publican en loopback. Para levantar PostgreSQL y aplicar las migraciones ejecutadas en esta entrega:
+La configuración histórica V03 reserva el proyecto Compose `crashmemory-v03`, PostgreSQL `54331`, Redis `6391`, MinIO `9013/9014`, API `4312` y web `3002`:
 
 ```bash
 POSTGRES_PORT=54331 POSTGRES_DB=crashmemory_v03 \
@@ -172,9 +172,37 @@ TEST_OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
 
 Las nueve pruebas cubren commit→fallo de enqueue→replay, flush de Redis→recovery, caída entre efecto DB/ACK sin duplicar, dos workers, cursor con microsegundos, evento canónico rehidratado desde PostgreSQL, namespace/hash/bytes y MinIO real.
 
+## Extracción V05
+
+El worker registra `source.item.revision.created.v1` y, dentro del recibo durable, materializa un `extraction_job` `local-only`. El runner reclama el job, carga exclusivamente el cuerpo y adjuntos del mismo usuario y revisión, persiste las páginas de PDF de texto y sólo después llama al modelo. La llamada nunca comparte la transacción del recibo. Una caída con lease vencido termina el job en revisión manual (`lease_expired`), antes que repetir una solicitud cuyo cobro pudiera ser desconocido.
+
+Los PDF se leen con PDF.js con límites de 10 MB, 100 páginas y 250 000 caracteres. Un PDF escaneado, corrupto o fuera de límite conserva el job en revisión manual (`pdf_requires_manual_review`); no se ejecuta OCR. Los candidatos `ready` requieren importes, vencimientos y fragmentos sustentadores con offsets UTF-16 y hash de cuerpo o página. Un correo normal sin candidatos termina `completed` sin crear obligación.
+
+El perfil `local-only` no permite red y no hace fallback. En esta entrega el adaptador local es un fake para pruebas; un job local sin adaptador queda en revisión manual. El adaptador remoto se habilita sólo para un perfil `remote-allowed` y requiere simultáneamente `MODEL_REMOTE_ENABLED=true`, `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true`, una clave fuera de Git y precios positivos/versionados. Usa `gpt-5.6-terra` con esfuerzo `medium`, `store:false`, un máximo de entrada de 64 000 unidades y de salida de 4 000. No se afirman controles ZDR: la confirmación cubre la configuración de no uso para entrenamiento, mientras la retención de monitoreo de abuso es una condición distinta.
+
+Cada llamada remota hace una sola solicitud HTTP sin retry del SDK. Antes de red reserva el máximo por bytes del request completo y por salida acotada; la tarifa de entrada predeterminada reserva conservadoramente `2.5` USD/M (máximo de escritura de caché), y la salida `12` USD/M. Si falta usage, el ledger queda `estimated`; un timeout o resultado ambiguo permanece `unknown`, nunca como coste cero.
+
+Con el entorno V05 de arriba, estos comandos fueron ejecutados contra PostgreSQL, Redis y MinIO locales:
+
+```bash
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54335/crashmemory_v05 \
+  pnpm --filter @crashmemory/worker test
+
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54335/crashmemory_v05 \
+REDIS_URL=redis://127.0.0.1:6395 \
+OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9017 \
+OBJECT_STORAGE_BUCKET=crashmemory-v05 \
+OBJECT_STORAGE_ACCESS_KEY=crashmemory \
+OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
+MODEL_REMOTE_ENABLED=false \
+  pnpm --filter @crashmemory/worker exec tsx src/worker.ts
+```
+
+La prueba E2E persiste una revisión Gmail sintética, ejecuta el consumidor real dos veces, carga un PDF multipágina, crea candidato/evidencia/outbox, rechaza una asociación de otro usuario, completa un correo sin obligación, conserva un PDF escaneado en revisión y recupera un lease vencido.
+
 ## Límites actuales
 
-V04 no implementa registro/recuperación de contraseña, extracción, reconciliación, Telegram, borrado/exportación ni pantallas de gestión. ObjectStorage persiste originales autorizados, pero V09 define el borrado y barreras contra resurrección. No hay garantía exactly-once para HTTP externo: V07 persistirá intentos antes de Telegram y resolverá la ambigüedad como `unknown`.
+V05 no implementa OCR, una implementación local de modelo, reconciliación, Telegram, borrado/exportación ni pantallas de gestión. ObjectStorage persiste originales autorizados, pero V09 define el borrado y barreras contra resurrección. No hay garantía exactly-once para HTTP externo: V07 persistirá intentos antes de Telegram y resolverá la ambigüedad como `unknown`.
 
 La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.md) fija para V05 `gpt-5.6-terra` configurable con esfuerzo `medium`, `store: false`, confirmación explícita del proyecto y bloqueo total de red para `local-only`. Distingue la política de no entrenamiento de la retención de monitoreo de abuso y no presume ZDR.
 
@@ -186,7 +214,7 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
 | V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
 | V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en esta entrega.                            |
-| V05     | ModelGateway, presupuesto y extracción verificable        | Integrada en `origin/main` (`55d9207`).               |
+| V05     | ModelGateway, presupuesto y extracción verificable        | En validación en `codex/v05-extraction`.              |
 | V06–V10 | Reconciliación, Telegram, web, ciclo de vida y validación | Pendiente.                                            |
 
 ## Gmail V04

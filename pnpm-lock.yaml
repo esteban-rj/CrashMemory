@@ -106,6 +106,9 @@ importers:
       '@crashmemory/extraction':
         specifier: workspace:*
         version: link:../../packages/extraction
+      '@crashmemory/gmail':
+        specifier: workspace:*
+        version: link:../../packages/gmail
       '@crashmemory/model-gateway':
         specifier: workspace:*
         version: link:../../packages/model-gateway

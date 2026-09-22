@@ -34,6 +34,10 @@ export interface ExtractionDocument {
   body: TextSource;
   pdfPages: PdfPageText[];
   userTimeZone: string;
+  reviewRequired?: Array<{
+    code: "pdf_requires_manual_review";
+    attachmentId: string;
+  }>;
 }
 
 const rawEvidenceSchema = z
@@ -131,7 +135,7 @@ const modelJsonSchema = {
                 additionalProperties: false,
                 required: ["kind", "date", "timeZone"],
                 properties: {
-                  kind: { const: "civil_date" },
+                  kind: { type: "string", enum: ["civil_date"] },
                   date: { type: "string" },
                   timeZone: { type: "string" },
                 },
@@ -141,7 +145,7 @@ const modelJsonSchema = {
                 additionalProperties: false,
                 required: ["kind", "at", "timeZone"],
                 properties: {
-                  kind: { const: "instant" },
+                  kind: { type: "string", enum: ["instant"] },
                   at: { type: "string" },
                   timeZone: { type: "string" },
                 },
@@ -265,7 +269,21 @@ function candidateFromRaw(
 
 function supportsMoney(text: string, money: Money): boolean {
   const parsed = parseLocalizedMoney(text);
-  return parsed?.currency === money.currency && parsed.amount === money.amount;
+  return (
+    parsed?.currency === money.currency &&
+    parsed !== null &&
+    canonicalDecimal(parsed.amount) === canonicalDecimal(money.amount)
+  );
+}
+
+/** Compares decimal strings exactly after removing insignificant zeroes. */
+function canonicalDecimal(value: string): string {
+  const [integer, fraction = ""] = value.split(".");
+  const normalizedInteger = integer.replace(/^0+(?=\d)/, "");
+  const normalizedFraction = fraction.replace(/0+$/, "");
+  return normalizedFraction
+    ? `${normalizedInteger}.${normalizedFraction}`
+    : normalizedInteger;
 }
 
 function supportsDue(text: string, due: DueValue): boolean {
@@ -333,6 +351,14 @@ export class DurableExtractionRunner {
       );
       if (!document) {
         await this.repository.fail(job.id, job.userId, "input_unavailable");
+        return "manual_review";
+      }
+      if (document.reviewRequired?.length) {
+        await this.repository.fail(
+          job.id,
+          job.userId,
+          document.reviewRequired[0]!.code,
+        );
         return "manual_review";
       }
       const result = await this.service.extract({
@@ -411,12 +437,20 @@ export class PostgresExtractionDocumentLoader {
     );
     if (user.rowCount !== 1) return null;
     const pdfPages: PdfPageText[] = [];
+    const reviewRequired: NonNullable<ExtractionDocument["reviewRequired"]> =
+      [];
     for (const attachment of input.attachments.filter(
       (item) => item.mediaType === "application/pdf",
     )) {
       const bytes = await this.blobs.read(userId, attachment.blobId);
       if (!bytes) continue;
       const parsed = await parseTextPdf(bytes);
+      if (parsed.manualReview) {
+        reviewRequired.push({
+          code: "pdf_requires_manual_review",
+          attachmentId: attachment.id,
+        });
+      }
       const pages = parsed.pages.map((text, index) => ({
         attachmentId: attachment.id,
         page: index + 1,
@@ -438,6 +472,7 @@ export class PostgresExtractionDocumentLoader {
       },
       pdfPages,
       userTimeZone: user.rows[0]!.time_zone,
+      reviewRequired,
     };
   }
 }
@@ -501,7 +536,11 @@ export function parseCivilDate(
   const date = iso
     ? `${iso[1]}-${iso[2]}-${iso[3]}`
     : slash
-      ? `${slash[3]}-${slash[2].padStart(2, "0")}-${slash[1].padStart(2, "0")}`
+      ? Number(slash[1]) <= 12 &&
+        Number(slash[2]) <= 12 &&
+        slash[1] !== slash[2]
+        ? undefined
+        : `${slash[3]}-${slash[2].padStart(2, "0")}-${slash[1].padStart(2, "0")}`
       : named && months[named[2].toLowerCase()]
         ? `${named[3]}-${months[named[2].toLowerCase()]}-${named[1].padStart(2, "0")}`
         : undefined;
