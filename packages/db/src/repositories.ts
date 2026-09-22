@@ -808,8 +808,8 @@ export class OAuthCallbackRepository {
   }): Promise<void> {
     await this.db.query(
       `INSERT INTO oauth_callback_nonces(
-         id, user_id, auth_session_id, provider, nonce_hash, expires_at
-       ) VALUES ($1, $2, $3, $4, $5, $6)`,
+         id, user_id, auth_session_id, provider, nonce_hash, expires_at, lifecycle_epoch
+       ) SELECT $1, $2, $3, $4, $5, $6, lifecycle_epoch FROM users WHERE id = $2`,
       [
         input.id,
         input.userId,
@@ -827,12 +827,13 @@ export class OAuthCallbackRepository {
     provider: "gmail";
     nonceHash: string;
     now?: Date;
-  }): Promise<boolean> {
-    const result = await this.db.query(
+  }): Promise<number | null> {
+    const result = await this.db.query<{ lifecycle_epoch: number }>(
       `UPDATE oauth_callback_nonces
        SET consumed_at = $5
        WHERE user_id = $1 AND auth_session_id = $2 AND provider = $3
-         AND nonce_hash = $4 AND consumed_at IS NULL AND expires_at > $5`,
+         AND nonce_hash = $4 AND consumed_at IS NULL AND expires_at > $5
+       RETURNING lifecycle_epoch`,
       [
         input.userId,
         input.authSessionId,
@@ -841,7 +842,9 @@ export class OAuthCallbackRepository {
         input.now ?? new Date(),
       ],
     );
-    return result.rowCount === 1;
+    return result.rowCount === 1
+      ? Number(result.rows[0]!.lifecycle_epoch)
+      : null;
   }
 }
 

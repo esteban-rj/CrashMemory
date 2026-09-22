@@ -136,6 +136,7 @@ async function main(): Promise<void> {
     );
   }
   let polling = false;
+  let activePoll: Promise<void> | undefined;
   const poll = async (): Promise<void> => {
     if (!linkPoller || polling || stopping) return;
     polling = true;
@@ -153,12 +154,23 @@ async function main(): Promise<void> {
       polling = false;
     }
   };
-  const pollTimer = setInterval(() => void poll(), pollIntervalMs);
-  void poll();
+  const runPoll = (): void => {
+    if (activePoll) return;
+    const current = poll();
+    activePoll = current;
+    void current.finally(() => {
+      if (activePoll === current) activePoll = undefined;
+    });
+  };
+  const pollTimer = setInterval(runPoll, pollIntervalMs);
+  runPoll();
   const shutdown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     clearInterval(pollTimer);
+    // Do not tear down the pool while getUpdates/record is active. It makes
+    // quiesced lifecycle backup procedures wait for the durable poll offset.
+    await activePoll;
     await extractionLoop.stop();
     await worker.close();
     await queue.close();

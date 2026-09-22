@@ -1,5 +1,5 @@
 {
-  "name": "@crashmemory/notifications",
+  "name": "@crashmemory/lifecycle",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,14 +9,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --import tsx test/notifications.test.ts",
-    "reminders:backfill": "tsx src/cli/backfill-reminders.ts"
+    "test": "node --test --import tsx test/*.test.ts"
   },
   "dependencies": {
-    "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
     "@crashmemory/runtime": "workspace:*",
-    "@crashmemory/security": "workspace:*",
     "pg": "8.16.3"
   },
   "devDependencies": {

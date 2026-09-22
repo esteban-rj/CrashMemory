@@ -79,6 +79,7 @@ async function main(): Promise<void> {
   );
   let stopping = false;
   let running = false;
+  let activeTick: Promise<void> | undefined;
   const tick = async (): Promise<void> => {
     if (running || stopping) return;
     running = true;
@@ -128,11 +129,22 @@ async function main(): Promise<void> {
       metrics: relay.getMetrics(),
     }),
   );
-  const timer = setInterval(() => void tick(), intervalMs());
+  const runTick = (): void => {
+    if (activeTick) return;
+    const current = tick();
+    activeTick = current;
+    void current.finally(() => {
+      if (activeTick === current) activeTick = undefined;
+    });
+  };
+  const timer = setInterval(runTick, intervalMs());
   const shutdown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
+    // A backup must only start after this wait: Gmail sync can be in HTTP or
+    // object persistence, and closing the pool first would leave it racing.
+    await activeTick;
     await queue.close();
     await connection.quit();
     await pool.end();

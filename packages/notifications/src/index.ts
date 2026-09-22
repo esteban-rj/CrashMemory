@@ -374,6 +374,7 @@ export class ReminderScheduler {
   async scheduleForVersion(
     event: Extract<OutboxEvent, { type: "obligation.version.created.v1" }>,
     existingClient?: PoolClient,
+    notBefore?: Date,
   ): Promise<void> {
     if (!this.automaticDeliveryEnabled) return;
     const schedule = async (client: PoolClient): Promise<void> => {
@@ -401,6 +402,9 @@ export class ReminderScheduler {
         const scheduledFor = new Date(
           dueAt.getTime() + policy.offsetMinutes * 60_000,
         );
+        // Backfill is explicit and never turns historical confirmed items into
+        // an immediate notification burst after policy is enabled.
+        if (notBefore && scheduledFor < notBefore) continue;
         await new ReminderRepository(client).create({
           id: randomUUID(),
           userId: event.userId,
@@ -415,6 +419,43 @@ export class ReminderScheduler {
     };
     if (existingClient) return schedule(existingClient);
     await inTransaction(this.pool, schedule);
+  }
+
+  /**
+   * Enabling automatic notifications does not replay already acknowledged
+   * version events. Operators run this deliberate, idempotent backfill after
+   * reviewing policy quality. Existing dedupe keys make repeated runs safe.
+   */
+  async backfillConfirmed(now = new Date(), limit = 100): Promise<number> {
+    if (!this.automaticDeliveryEnabled) return 0;
+    const versions = await this.pool.query<Record<string, unknown>>(
+      `SELECT o.id AS obligation_id, o.user_id, v.id AS obligation_version_id, v.revision
+       FROM obligations o JOIN obligation_versions v ON v.id = o.current_version_id
+       WHERE o.state = 'confirmed' AND o.user_id = v.user_id
+       ORDER BY o.updated_at, o.id LIMIT $1`,
+      [limit],
+    );
+    for (const version of versions.rows) {
+      await this.scheduleForVersion(
+        {
+          id: randomUUID(),
+          userId: String(version.user_id),
+          type: "obligation.version.created.v1",
+          aggregateType: "obligation",
+          aggregateId: String(version.obligation_id),
+          idempotencyKey: `reminder-backfill:${version.obligation_version_id}`,
+          occurredAt: now.toISOString(),
+          payload: {
+            obligationId: String(version.obligation_id),
+            obligationVersionId: String(version.obligation_version_id),
+            revision: Number(version.revision),
+          },
+        },
+        undefined,
+        now,
+      );
+    }
+    return versions.rowCount ?? 0;
   }
 
   async cancelForChange(

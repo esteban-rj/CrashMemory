@@ -6,7 +6,9 @@ import { registerAuthRoutes, type AuthConfig } from "./auth.ts";
 import { registerGmailRoutes, type GmailRouteConfig } from "./gmail.ts";
 import { registerTelegramRoutes } from "./telegram.ts";
 import { registerObligationRoutes } from "./obligations.ts";
+import { registerLifecycleRoutes } from "./lifecycle.ts";
 import type { ObjectStorage } from "@crashmemory/runtime";
+import type { DeletionJournal } from "@crashmemory/lifecycle";
 
 export function buildApp(
   options: {
@@ -15,6 +17,7 @@ export function buildApp(
     gmail?: GmailRouteConfig;
     telegramLinks?: TelegramLinkService;
     objectStorage?: ObjectStorage;
+    lifecycleJournal?: DeletionJournal;
     logger?: FastifyServerOptions["logger"];
   } = {},
 ) {
@@ -76,6 +79,13 @@ export function buildApp(
       options.pool,
       options.auth,
       options.telegramLinks,
+    );
+    registerLifecycleRoutes(
+      app,
+      options.pool,
+      options.auth,
+      options.objectStorage,
+      options.lifecycleJournal,
     );
   } else {
     app.post("/api/v1/auth/login", async (request, reply) =>

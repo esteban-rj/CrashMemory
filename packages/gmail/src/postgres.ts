@@ -28,6 +28,14 @@ function asBytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
+/** A deletion fence is a normal outcome for an obsolete sync/replay job. */
+export class GmailLifecycleBlockedError extends Error {
+  constructor() {
+    super("Gmail source is deleted or disconnected");
+    this.name = "GmailLifecycleBlockedError";
+  }
+}
+
 /** PostgreSQL adapter: a complete V05 input and its outbox event share one transaction. */
 export class PostgresGmailPersistence implements GmailPersistence {
   private readonly blobs: AuthorizedBlobStorage;
@@ -36,12 +44,31 @@ export class PostgresGmailPersistence implements GmailPersistence {
     private readonly pool: Pool,
     private readonly userId: string,
     private readonly sourceConnectionId: string,
-    objectStorage: ObjectStorage,
+    private readonly objectStorage: ObjectStorage,
   ) {
     this.blobs = new AuthorizedBlobStorage(
       objectStorage,
       new SourceRepository(pool),
     );
+  }
+
+  private async assertWritable(externalMessageId: string): Promise<void> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM source_connections connection
+       WHERE connection.id = $1 AND connection.user_id = $2
+         AND connection.provider = 'gmail' AND connection.state = 'active'
+         AND NOT EXISTS (
+           SELECT 1 FROM lifecycle_tombstones t WHERE t.user_id = $2 AND (
+             (t.scope = 'gmail_connection' AND t.source_connection_id = $1)
+             OR (t.scope = 'gmail_message' AND t.provider = 'gmail'
+                 AND t.external_account_id = connection.external_account_id
+                 AND t.external_message_id = $3)
+             OR t.scope = 'account'
+           )
+         )`,
+      [this.sourceConnectionId, this.userId, externalMessageId],
+    );
+    if (result.rowCount !== 1) throw new GmailLifecycleBlockedError();
   }
 
   private async writeBlob(
@@ -70,10 +97,19 @@ export class PostgresGmailPersistence implements GmailPersistence {
     messages: NormalizedMessage[];
     reason: "bootstrap" | "incremental" | "resync";
   }): Promise<void> {
-    for (const message of input.messages) await this.persistMessage(message);
+    for (const message of input.messages) {
+      try {
+        await this.persistMessage(message);
+      } catch (error) {
+        if (!(error instanceof GmailLifecycleBlockedError)) throw error;
+      }
+    }
   }
 
   private async persistMessage(message: NormalizedMessage): Promise<void> {
+    // Reject before every original/body/attachment write. The transaction
+    // below repeats the check before catalog rows or events are created.
+    await this.assertWritable(message.externalId);
     const original = await this.writeBlob(
       "original",
       message.original,
@@ -102,6 +138,18 @@ export class PostgresGmailPersistence implements GmailPersistence {
       `${this.userId}:${this.sourceConnectionId}:revision:${message.externalId}:${original.contentSha256}`,
     );
     await inTransaction(this.pool, async (client) => {
+      const guard = await client.query(
+        `SELECT 1 FROM source_connections connection
+         WHERE connection.id = $1 AND connection.user_id = $2 AND connection.state = 'active'
+           AND NOT EXISTS (SELECT 1 FROM lifecycle_tombstones t WHERE t.user_id = $2
+             AND ((t.scope = 'gmail_connection' AND t.source_connection_id = $1)
+               OR (t.scope = 'gmail_message' AND t.provider = 'gmail'
+                   AND t.external_account_id = connection.external_account_id
+                   AND t.external_message_id = $3)
+               OR t.scope = 'account')) FOR UPDATE`,
+        [this.sourceConnectionId, this.userId, message.externalId],
+      );
+      if (guard.rowCount !== 1) throw new GmailLifecycleBlockedError();
       const item = await client.query<{ id: string }>(
         `INSERT INTO source_items(id, user_id, source_connection_id, external_id)
          VALUES ($1, $2, $3, $4)

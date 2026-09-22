@@ -3,6 +3,7 @@ import { SourceRepository, createPool } from "@crashmemory/db";
 import { createGooglePubSubTokenVerifier } from "./gmail.ts";
 import { TelegramLinkService } from "@crashmemory/notifications";
 import { S3ObjectStorage } from "@crashmemory/runtime";
+import { EncryptedFileDeletionJournal } from "@crashmemory/lifecycle";
 import type { FastifyServerOptions } from "fastify";
 import {
   CredentialCipher,
@@ -107,6 +108,15 @@ const app = buildApp({
     : {}),
   ...(pool && cipher && process.env.TELEGRAM_BOT_TOKEN
     ? { telegramLinks: new TelegramLinkService(pool, cipher) }
+    : {}),
+  ...(process.env.LIFECYCLE_JOURNAL_PATH &&
+  process.env.LIFECYCLE_JOURNAL_KEY_BASE64
+    ? {
+        lifecycleJournal: new EncryptedFileDeletionJournal(
+          process.env.LIFECYCLE_JOURNAL_PATH,
+          process.env.LIFECYCLE_JOURNAL_KEY_BASE64,
+        ),
+      }
     : {}),
   logger: loggerOptions,
 });

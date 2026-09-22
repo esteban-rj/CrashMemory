@@ -1,6 +1,6 @@
 # CrashMemory — Gmail, obligaciones con evidencia y avisos Telegram
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. La web mínima sigue pendiente. El flujo se valida con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. V09 añade las operaciones locales de desconexión, borrado y exportación con una barrera contra replays. La web mínima sigue pendiente. El flujo se valida con servicios locales y proveedores simulados.
 
 ## Reconciliación V06 y API
 
@@ -320,6 +320,18 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V06     | Reconciliación                                            | Pendiente.                                                                        |
 | V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
 | V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                                                        |
+
+## Ciclo de vida V09
+
+Las mutaciones de ciclo de vida son rutas autenticadas de propietario, con `Origin` confiable, `Content-Type: application/json` y `X-CSRF-Token`. Requieren además `LIFECYCLE_JOURNAL_PATH` y una clave aleatoria de 32 bytes en `LIFECYCLE_JOURNAL_KEY_BASE64`; sin ese journal cifrado la API responde `503` antes de cambiar PostgreSQL. Cada intención se añade y sincroniza al journal antes de confirmar la transacción. El journal se conserva fuera de los dumps de PostgreSQL y se debe aplicar de forma conservadora antes de arrancar workers tras una restauración.
+
+`POST /api/v1/lifecycle/gmail/disconnect` recibe `{ "connectionId": "…" }`: elimina la credencial local, detiene la sincronización e invalida callbacks OAuth ya emitidos. No afirma revocar la concesión remota de Google. `POST /api/v1/lifecycle/telegram/unlink` revoca el receptor y cancela avisos pendientes. `DELETE /api/v1/lifecycle/sources/:connectionId`, `DELETE /api/v1/lifecycle/sources/:connectionId/items/:externalMessageId`, `DELETE /api/v1/lifecycle/obligations/:obligationId` y `DELETE /api/v1/lifecycle/account` borran respectivamente fuente, mensaje, conocimiento generado o cuenta. El borrado de fuente crea tombstones estables por usuario, cuenta Gmail y mensaje externo; por eso replays, reconexiones y colas viejas no recrean contenido borrado. Los originales se eliminan de MinIO después del commit y una falla queda registrada para limpieza posterior.
+
+`GET /api/v1/lifecycle/export?includeOriginals=false` produce una exportación propia con conexiones, obligaciones y evidencia. Los originales se excluyen por defecto. Con `includeOriginals=true` se codifican en base64 y cada uno está limitado a 10 MiB; los bytes preservados pueden ser una representación JSON normalizada cuando Gmail no entregó RFC822 raw, por lo que no se etiquetan como archivos `.eml` portables.
+
+Los avisos automáticos deshabilitados no se recuperan implícitamente al cambiar la variable. Tras habilitar la política y revisar su calidad, el operador puede ejecutar `NOTIFICATIONS_AUTOMATIC_ENABLED=true DATABASE_URL=… pnpm --filter @crashmemory/notifications reminders:backfill`; sólo programa tiempos futuros, usa las claves de deduplicación existentes y no envía un lote histórico inmediatamente.
+
+Para una copia local consistente, detenga API, worker y scheduler y espere su apagado antes de copiar PostgreSQL y MinIO. El scheduler espera el tick Gmail activo y el worker espera el poll Telegram activo al recibir la señal. Esta rama verifica la migración y las barreras locales; aún no incorpora un empaquetador de backup/restore que copie el journal cifrado junto con PostgreSQL y MinIO, así que no se debe declarar recuperación completa desde un backup antiguo hasta que V10 ejecute ese procedimiento extremo a extremo.
 
 ## Gmail V04
 

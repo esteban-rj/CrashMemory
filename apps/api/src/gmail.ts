@@ -325,13 +325,13 @@ export function registerGmailRoutes(
           ),
         );
     }
-    const consumed = await new OAuthCallbackRepository(pool).consume({
+    const lifecycleEpoch = await new OAuthCallbackRepository(pool).consume({
       userId: state.userId,
       authSessionId: state.sessionId,
       provider: "gmail",
       nonceHash: hashOpaqueToken(state.nonce),
     });
-    if (!consumed)
+    if (lifecycleEpoch === null)
       return reply
         .code(400)
         .send(
@@ -345,6 +345,13 @@ export function registerGmailRoutes(
       const token = await exchangeCode(config, query.code);
       const profile = await googleProfile(token.accessToken);
       await inTransaction(pool, async (client) => {
+        const epoch = await client.query(
+          "SELECT 1 FROM users WHERE id = $1 AND lifecycle_epoch = $2 FOR UPDATE",
+          [state.userId, lifecycleEpoch],
+        );
+        if (epoch.rowCount !== 1) {
+          throw new Error("OAuth consent was invalidated by lifecycle change");
+        }
         const sources = new SourceRepository(client);
         let connection = await sources.findConnectionByExternalAccount(
           state.userId,
