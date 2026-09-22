@@ -187,6 +187,8 @@ export class GoogleGmailRemote implements GmailRemote {
     );
     if (response.status === 404 && path.startsWith("history"))
       throw new GmailHistoryExpiredError();
+    if (response.status === 404 && path.startsWith("messages/"))
+      throw new GmailMessageNotFoundError();
     if (response.status === 401) throw new GmailReauthRequiredError();
     const payload = (await response.json().catch(() => null)) as Record<
       string,
@@ -370,6 +372,14 @@ export class GmailHistoryExpiredError extends Error {
   }
 }
 
+/** A message can disappear after history.list reports it; this is not a cursor failure. */
+export class GmailMessageNotFoundError extends Error {
+  readonly code = "message_not_found";
+  constructor() {
+    super("Gmail message is no longer available");
+  }
+}
+
 export class GmailReauthRequiredError extends Error {
   readonly code = "reauth_required";
   constructor() {
@@ -394,7 +404,7 @@ export class GmailSyncService {
 
   private async materialize(ids: string[]): Promise<NormalizedMessage[]> {
     const uniqueIds = [...new Set(ids)];
-    return Promise.all(
+    const materialized = await Promise.allSettled(
       uniqueIds.map(async (id) => {
         const message = await this.remote.getMessage(id);
         return normalizeMessage(message, (attachmentId) =>
@@ -402,6 +412,15 @@ export class GmailSyncService {
         );
       }),
     );
+    const messages: NormalizedMessage[] = [];
+    for (const result of materialized) {
+      if (result.status === "fulfilled") {
+        messages.push(result.value);
+      } else if (!(result.reason instanceof GmailMessageNotFoundError)) {
+        throw result.reason;
+      }
+    }
+    return messages;
   }
 
   /**

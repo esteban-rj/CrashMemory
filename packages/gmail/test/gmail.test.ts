@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   GmailHistoryExpiredError,
+  GoogleGmailRemote,
   GmailSyncService,
   normalizeMessage,
   type GmailPersistence,
@@ -108,6 +109,71 @@ test("history cursor advances only after durable pages and replays duplicate not
   };
   await new GmailSyncService(remote, persistence).incremental("10");
   assert.deepEqual(persisted, [["m-1"], ["m-2"]]);
+  assert.deepEqual(cursors, ["12"]);
+});
+
+test("Google history advances past a deleted message while persisting its surviving sibling", async () => {
+  const persisted: string[][] = [];
+  const cursors: string[] = [];
+  const persistence: GmailPersistence = {
+    async persistPage({ messages }) {
+      persisted.push(messages.map((message) => message.externalId));
+    },
+    async confirmCursor(value) {
+      cursors.push(value);
+    },
+    async recordWatch() {},
+    async recordSyncFailure() {},
+  };
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL) => {
+    const value = String(url);
+    if (value.includes("history?")) {
+      return new Response(
+        JSON.stringify({
+          historyId: "12",
+          history: [
+            {
+              messages: [{ id: "deleted" }],
+              messagesAdded: [{ message: { id: "new" } }],
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (value.includes("messages/deleted")) {
+      return new Response(JSON.stringify({ error: { code: 404 } }), {
+        status: 404,
+      });
+    }
+    if (value.includes("messages/new?format=raw")) {
+      return new Response(
+        JSON.stringify({ raw: b64("From: synthetic\r\n\r\nnew") }),
+        {
+          status: 200,
+        },
+      );
+    }
+    if (value.includes("messages/new?format=full")) {
+      return new Response(
+        JSON.stringify({
+          id: "new",
+          historyId: "12",
+          payload: { mimeType: "text/plain", body: { data: b64("new") } },
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`unexpected Gmail request: ${value}`);
+  }) as typeof fetch;
+  try {
+    const remote = new GoogleGmailRemote("synthetic-access-token");
+    await new GmailSyncService(remote, persistence).incremental("10");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+  assert.deepEqual(persisted, [["new"]]);
   assert.deepEqual(cursors, ["12"]);
 });
 

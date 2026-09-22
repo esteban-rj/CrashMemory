@@ -60,9 +60,9 @@ async function startConnect(
     payload: { redirectPath: "/gmail" },
   });
   assert.equal(response.statusCode, 200);
-  return new URL(response.json().data.authorizationUrl).searchParams.get(
-    "state",
-  )!;
+  const authorizationUrl = new URL(response.json().data.authorizationUrl);
+  assert.equal(authorizationUrl.searchParams.get("prompt"), "consent");
+  return authorizationUrl.searchParams.get("state")!;
 }
 
 test(

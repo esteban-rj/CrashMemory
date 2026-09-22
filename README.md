@@ -205,7 +205,7 @@ GMAIL_PUBSUB_TOPIC=projects/project/topics/crashmemory-gmail
 GMAIL_SYNC_ENABLED=true
 ```
 
-Con una sesión local ya iniciada, `POST /api/v1/gmail/connect` exige `Origin`, `Content-Type: application/json` y `X-CSRF-Token`; devuelve una URL de consentimiento de Google. El callback exige además la misma cookie de sesión activa que emitió el estado firmado, antes de consumir su nonce. Las credenciales se cifran vinculadas a usuario y conexión. Un `invalid_grant`, la expiración de un refresh token de una app en modo testing o una revocación dejan la conexión en error y requieren volver a autorizarla.
+Con una sesión local ya iniciada, `POST /api/v1/gmail/connect` exige `Origin`, `Content-Type: application/json` y `X-CSRF-Token`; devuelve una URL de consentimiento de Google con `prompt=consent` para obtener un refresh token también al reconectar. El callback exige además la misma cookie de sesión activa que emitió el estado firmado, antes de consumir su nonce. Las credenciales se cifran vinculadas a usuario y conexión. Un `invalid_grant`, la expiración de un refresh token de una app en modo testing o una revocación dejan la conexión en error y requieren volver a autorizarla.
 
 El conector limita el bootstrap a 200 mensajes. Captura el `historyId` antes del histórico y hace catch-up después; cada página persiste revisiones, cuerpo normalizado UTF-8, adjuntos y el evento `source.item.revision.created.v1` en una transacción antes de confirmar el cursor. Replays y notificaciones reordenadas son seguros. Un HTTP 404 de `history.list` marca un resync explícito y nunca expande la ventana autorizada en silencio. El watch se debe renovar a diario; el polling incremental desde el cursor confirmado queda como respaldo para avisos perdidos.
 

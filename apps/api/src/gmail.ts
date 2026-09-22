@@ -91,6 +91,9 @@ function googleAuthorizationUrl(input: {
     scope: GMAIL_READONLY_SCOPE,
     access_type: "offline",
     include_granted_scopes: "true",
+    // Reconnection must obtain a replacement refresh token; Google can omit it
+    // when it reuses a prior grant without an explicit consent prompt.
+    prompt: "consent",
     state: input.state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${query}`;
