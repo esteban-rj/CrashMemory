@@ -13,6 +13,7 @@
   "dependencies": {
     "@crashmemory/contracts": "workspace:*",
     "@crashmemory/db": "workspace:*",
+    "@crashmemory/gmail": "workspace:*",
     "@crashmemory/security": "workspace:*",
     "fastify": "5.12.5",
     "pg": "8.16.3"

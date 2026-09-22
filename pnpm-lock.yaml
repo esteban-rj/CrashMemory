@@ -41,6 +41,9 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/gmail':
+        specifier: workspace:*
+        version: link:../../packages/gmail
       '@crashmemory/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -63,9 +66,15 @@ importers:
       '@crashmemory/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@crashmemory/gmail':
+        specifier: workspace:*
+        version: link:../../packages/gmail
       '@crashmemory/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@crashmemory/security':
+        specifier: workspace:*
+        version: link:../../packages/security
 
   apps/web:
     dependencies:
@@ -146,6 +155,25 @@ importers:
       zod:
         specifier: 4.1.12
         version: 4.1.12
+
+  packages/gmail:
+    dependencies:
+      '@crashmemory/db':
+        specifier: workspace:*
+        version: link:../db
+      '@crashmemory/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@crashmemory/security':
+        specifier: workspace:*
+        version: link:../security
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/pg':
+        specifier: 8.15.6
+        version: 8.15.6
 
   packages/model-gateway:
     dependencies:
