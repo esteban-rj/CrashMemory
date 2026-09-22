@@ -70,7 +70,7 @@ export function verifiedIdentityHash(
     "u",
   );
   const invoicePattern = new RegExp(
-    `\\b(?:factura|invoice|recibo|receipt|liquidaci[oó]n)\\s*(?:(?:n[°ºo.]?|no\\.?|n[uú]mero|number|ref(?:erencia)?|#)\\s*[:#.-]?\\s*)?(${token(reference)})(?=$|[^\\p{L}\\p{N}])`,
+    `\\b(?:factura|invoice|recibo|receipt|liquidaci[oó]n)\\s*(?:(?:n[°ºo.]?|no\\.?|n[uú]mero|number|ref(?:erencia)?|#)\\s*[:#.-]?\\s*)?(${token(reference)})(?=$|[^\\p{L}\\p{N}_./-])`,
     "u",
   );
   if (
