@@ -16,7 +16,14 @@
     "test": {
       "dependsOn": ["^build"],
       "cache": false,
-      "env": ["TEST_DATABASE_URL"],
+      "env": [
+        "TEST_DATABASE_URL",
+        "TEST_REDIS_URL",
+        "TEST_OBJECT_STORAGE_ENDPOINT",
+        "TEST_OBJECT_STORAGE_BUCKET",
+        "TEST_OBJECT_STORAGE_ACCESS_KEY",
+        "TEST_OBJECT_STORAGE_SECRET_KEY"
+      ],
       "outputs": []
     }
   }

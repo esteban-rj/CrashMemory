@@ -138,6 +138,47 @@ export class SessionRepository {
 export class SourceRepository {
   constructor(private readonly db: Queryable) {}
 
+  /**
+   * Serializes a storage key across processes without holding a reversible
+   * transaction over object-storage I/O. The same pool client owns lock and
+   * unlock, so a failed writer can only compensate its own reservation before
+   * a concurrent writer observes it.
+   */
+  async withBlobWriteLock<T>(
+    blobId: string,
+    operation: (catalog: SourceRepository) => Promise<T>,
+  ): Promise<T> {
+    const pool = this.db as Pool;
+    if (typeof pool.connect !== "function") {
+      throw new Error("Blob storage locks require a PostgreSQL pool");
+    }
+    const client = await pool.connect();
+    let locked = false;
+    let discardConnection = false;
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
+        blobId,
+      ]);
+      locked = true;
+      // DB reads and the insert run through this exact client. Holding a lock
+      // does not consume a second pool slot or wrap object-storage I/O in a
+      // reversible DB transaction.
+      return await operation(new SourceRepository(client));
+    } finally {
+      if (locked) {
+        try {
+          await client.query(
+            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+            [blobId],
+          );
+        } catch {
+          discardConnection = true;
+        }
+      }
+      client.release(discardConnection);
+    }
+  }
+
   async createConnection(input: {
     id: string;
     userId: string;
