@@ -109,9 +109,9 @@ pnpm build
 pnpm audit
 ```
 
-`pnpm check` ejecuta lint, formato, tipos, scanner de secretos y 17 pruebas: contratos, dinero/fecha, cifrado, redacción, serialización segura de logs, estado OAuth, recuperación de migración fallida, repositorios reales con dos usuarios y login/logout real con origen y CSRF. Las pruebas DB rechazan asociación cruzada aunque los IDs ajenos existan y comprueban la inmutabilidad de evidencia. `pnpm build` incluye Next.js y `pnpm audit` terminó sin vulnerabilidades conocidas.
+`pnpm check` ejecuta lint, formato, tipos, scanner de secretos y 17 pruebas: contratos, dinero/fecha, cifrado, redacción, serialización segura de logs, estado OAuth, recuperación de migración fallida, repositorios reales con dos usuarios y login/logout real con origen y CSRF. La prueba OAuth altera un byte de la firma decodificada, por lo que siempre verifica un token criptográficamente distinto. Las pruebas DB rechazan asociación cruzada aunque los IDs ajenos existan y comprueban la inmutabilidad de evidencia. `pnpm build` incluye Next.js y `pnpm audit` terminó sin vulnerabilidades conocidas.
 
-CI levanta PostgreSQL `17.6-alpine`, inyecta `TEST_DATABASE_URL` y ejecuta las mismas integraciones. La tarea Turbo de tests no usa caché, por lo que un resultado anterior sin DB no puede reutilizar pruebas omitidas.
+CI levanta PostgreSQL `17.6-alpine`, Redis `8.4.0-alpine` y MinIO, e inyecta las variables `TEST_DATABASE_URL`, `TEST_REDIS_URL` y `TEST_OBJECT_STORAGE_*`; así ejecuta las integraciones V03 sin skips. La tarea Turbo de tests no usa caché, por lo que un resultado anterior sin DB no puede reutilizar pruebas omitidas.
 
 También se ejecutaron web `3001` y API `4311` en paralelo: `GET http://127.0.0.1:3001/api/v1/contracts` atravesó el rewrite de mismo origen y devolvió `200` con `X-CrashMemory-Contract: 2026-09-20.v1`.
 

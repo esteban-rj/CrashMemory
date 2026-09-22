@@ -51,7 +51,13 @@ test("OAuth state rejects tampering, expiry and external redirects", () => {
     expiresAt: Date.now() + 60_000,
   });
   assert.equal(signer.verify(state).userId, "user-a");
-  assert.throws(() => signer.verify(`${state.slice(0, -1)}x`));
+  const [payload, signature] = state.split(".");
+  assert.ok(payload && signature);
+  const alteredSignature = Buffer.from(signature, "base64url");
+  alteredSignature[0] ^= 1;
+  assert.throws(() =>
+    signer.verify(`${payload}.${alteredSignature.toString("base64url")}`),
+  );
   assert.throws(() => signer.verify(state, Date.now() + 120_000));
   assert.throws(() =>
     signer.issue({
