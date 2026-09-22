@@ -171,6 +171,8 @@ El fixture genera una referencia única por ejecución, usa PostgreSQL y MinIO r
 
 ## Estado de aceptación MVP 1
 
+La implementación V10 quedó integrada en `origin/main` como `18cabbecfaa30e766dc49a9cc89f7a77f89dddcb`; las CI candidata `35764125498` y de integración `35764483752` terminaron correctamente. Esta aceptación cubre el recorrido sintético y no sustituye las validaciones externas pendientes indicadas abajo.
+
 | Criterio              | Evidencia V10                                                                        | Estado             |
 | --------------------- | ------------------------------------------------------------------------------------ | ------------------ |
 | AC-01 reconstrucción  | lockfile, Compose, migración/seed, arranque conjunto y browser desde worktree limpio | Sintético validado |

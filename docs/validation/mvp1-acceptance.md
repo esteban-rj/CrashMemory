@@ -50,6 +50,8 @@ La migración limpia aplicó `0001`–`0009`. `acceptance:seed` creó un mensaje
 - `pnpm --filter @crashmemory/model-gateway test`: 6/6.
 - `pnpm check` final sobre DB/bucket vacíos V10: 24/24 tareas; único skip, restore aislado sin variables destructivas; secret scan limpio. Log local `/private/tmp/crashmemory-v10-check-final-clean.log`.
 - `pnpm build` final: 15/15 tareas. Log local `/private/tmp/crashmemory-v10-build-final.log`.
+- CI candidata `35764125498`: `SUCCESS` sobre `18cabbecfaa30e766dc49a9cc89f7a77f89dddcb`, incluidos check y build remotos.
+- CI de integración `35764483752`: `SUCCESS` sobre el mismo SHA ya publicado en `origin/main`.
 - Navegador real `agent-browser`: login contra API/DB, sin overlay, pantalla vacía, Conexiones, desconexión Gmail `not_configured` visible y desvínculo Telegram. Evidencia/409 ya tenían QA funcional V08; V10 los cubre mediante API y fixture persistido sin repetir toda la navegación.
 - QA independiente de I00: PASS en cuenta/IDs del fixture; obligación pagada revisión 5, historial, Ver texto, propuesta aceptada y campos en español; intentos `Enviado`/`Resultado incierto`; desconexión Gmail, desvínculo Telegram, logout y viewport móvil 390×844 sin errores de página. Captura local `/private/tmp/crashmemory-v10-root-mobile.png`.
 
