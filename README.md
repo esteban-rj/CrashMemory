@@ -1,6 +1,6 @@
-# CrashMemory — Memoria y seguridad V02
+# CrashMemory — Runtime durable V03
 
-CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V02 añade PostgreSQL, repositorios aislados por usuario y autenticación local a la base sintética de V01. Gmail, extracción, reconciliación y Telegram todavía no están conectados.
+CrashMemory implementa el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V03 añade outbox durable, BullMQ recuperable, recibos idempotentes por consumidor y ObjectStorage autorizado a la base V02. Gmail, extracción, reconciliación y Telegram todavía no están conectados.
 
 ## Requisitos
 
@@ -15,14 +15,14 @@ pnpm install --frozen-lockfile
 
 ## Base local aislada
 
-La configuración de ejemplo reserva el proyecto Compose `crashmemory-v02`, PostgreSQL `54330`, Redis `6390`, MinIO `9011/9012`, API `4311` y web `3001`. Los servicios sólo publican en loopback. Para levantar PostgreSQL y aplicar la migración ejecutada en esta entrega:
+La configuración de ejemplo reserva el proyecto Compose `crashmemory-v03`, PostgreSQL `54331`, Redis `6391`, MinIO `9013/9014`, API `4312` y web `3002`. Los servicios sólo publican en loopback. Para levantar PostgreSQL y aplicar las migraciones ejecutadas en esta entrega:
 
 ```bash
-POSTGRES_PORT=54330 POSTGRES_DB=crashmemory_v02 \
-  docker compose -p crashmemory-v02 \
+POSTGRES_PORT=54331 POSTGRES_DB=crashmemory_v03 \
+  docker compose -p crashmemory-v03 \
   -f infra/compose/docker-compose.yml up -d postgres
 
-DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54330/crashmemory_v02 \
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
   pnpm db:migrate
 ```
 
@@ -33,7 +33,7 @@ La segunda ejecución de `pnpm db:migrate` responde `Database is up to date`. Ca
 Para limpiar sólo el entorno local V02 después de las pruebas:
 
 ```bash
-docker compose -p crashmemory-v02 \
+docker compose -p crashmemory-v03 \
   -f infra/compose/docker-compose.yml down -v
 ```
 
@@ -98,7 +98,7 @@ Las relaciones sensibles usan FKs compuestas con `user_id`. Un ID válido de otr
 
 La frontera aditiva [entrada persistida de extracción](docs/contracts/extraction-input-v1.md) fija la revisión → cuerpo normalizado + adjuntos tipados que V04 producirá y V05 consumirá. Un PDF de evidencia debe pertenecer al mismo usuario y revisión.
 
-## Verificación ejecutada
+## Verificación V02 integrada
 
 Con PostgreSQL V02 saludable se ejecutó:
 
@@ -115,17 +115,59 @@ CI levanta PostgreSQL `17.6-alpine`, inyecta `TEST_DATABASE_URL` y ejecuta las m
 
 También se ejecutaron web `3001` y API `4311` en paralelo: `GET http://127.0.0.1:3001/api/v1/contracts` atravesó el rewrite de mismo origen y devolvió `200` con `X-CrashMemory-Contract: 2026-09-20.v1`.
 
+## Runtime durable V03
+
+La migración `0002_v03_durable_runtime.sql` registra cada intento de despacho y un recibo durable por `(consumer_name, event_id)`. El relé confirma el enqueue en PostgreSQL sólo después de que BullMQ acepta el job. Que Redis pierda sus datos no marca ningún evento como procesado: al arrancar, worker y scheduler recorren PostgreSQL por páginas y recrean jobs con nuevos IDs recuperables.
+
+Un consumidor de efecto de base de datos aplica el cambio y marca el recibo `completed` en una transacción. Si el proceso cae antes del ACK de BullMQ, el replay ve el recibo y no repite el efecto. Un tipo aún no implementado no tiene handler: falla visiblemente en BullMQ y puede recuperarse cuando V05/V06/V07 registre su consumidor real.
+
+ObjectStorage usa claves `users/<uuid>/blobs/<uuid>`. La lectura comprueba dueño, namespace, tamaño y SHA-256 contra el blob de PostgreSQL. Escrituras concurrentes se serializan por blob con advisory lock; una violación determinista de DB limpia el objeto recién creado, y una pérdida de conexión deja un huérfano explícito para limpieza posterior antes que arriesgar borrar bytes que pudieran haberse confirmado.
+
+Para operar el dispatcher y worker, con PostgreSQL y Redis ya levantados, ejecute en terminales distintas:
+
+```bash
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
+REDIS_URL=redis://127.0.0.1:6391 \
+  pnpm --filter @crashmemory/scheduler dev
+
+DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
+REDIS_URL=redis://127.0.0.1:6391 \
+  pnpm --filter @crashmemory/worker dev
+```
+
+Ambos emiten JSON sin payloads: `outbox.dispatch.enqueued`, `outbox.dispatch.failed`, `consumer.completed`, `consumer.skipped` y `consumer.unregistered` están en el campo `metrics`; fallas de worker o scheduler incluyen sólo el componente y código. El scheduler despacha cada `OUTBOX_DISPATCH_INTERVAL_MS` (predeterminado `5000`, mínimo `250`), y ambos cierran conexiones limpiamente ante `SIGINT` o `SIGTERM`.
+
+Para revisar un job fallido o forzar un replay no borre filas de PostgreSQL: corrija primero el consumidor/configuración y reinicie worker o scheduler. El arranque ejecuta recovery desde outbox. `outbox_events.last_error_code`, `outbox_dispatch_attempts` y `event_consumer_receipts` guardan el diagnóstico y estado durables; Redis puede limpiarse y el scheduler reconstruirá los jobs.
+
+La prueba V03 validada en este worktree usa servicios propios `crashmemory-v03`:
+
+```bash
+COMPOSE_PROJECT_NAME=crashmemory-v03 POSTGRES_PORT=54331 POSTGRES_DB=crashmemory_v03 \
+REDIS_PORT=6391 MINIO_PORT=9013 MINIO_CONSOLE_PORT=9014 \
+  docker --context colima-crashmemory compose -f infra/compose/docker-compose.yml up -d --wait
+
+TEST_DATABASE_URL=postgresql://crashmemory:crashmemory@127.0.0.1:54331/crashmemory_v03 \
+TEST_REDIS_URL=redis://127.0.0.1:6391 \
+TEST_OBJECT_STORAGE_ENDPOINT=http://127.0.0.1:9013 \
+TEST_OBJECT_STORAGE_BUCKET=crashmemory-v03-test \
+TEST_OBJECT_STORAGE_ACCESS_KEY=crashmemory \
+TEST_OBJECT_STORAGE_SECRET_KEY=crashmemory-local-only \
+  pnpm --filter @crashmemory/runtime test
+```
+
+Las nueve pruebas cubren commit→fallo de enqueue→replay, flush de Redis→recovery, caída entre efecto DB/ACK sin duplicar, dos workers, cursor con microsegundos, evento canónico rehidratado desde PostgreSQL, namespace/hash/bytes y MinIO real.
+
 ## Límites actuales
 
-V02 no implementa registro/recuperación de contraseña, OAuth Gmail ni su callback HTTP, descarga de objetos, extracción, jobs Redis, reconciliación, Telegram, borrado/exportación o pantallas de gestión. MinIO y Redis permanecen disponibles en Compose para sesiones posteriores, pero V02 sólo verificó PostgreSQL. Los originales conservan metadatos de objeto; V03 implementará ObjectStorage y V09 las operaciones de ciclo de vida.
+V03 no implementa registro/recuperación de contraseña, OAuth Gmail ni su callback HTTP, extracción, reconciliación, Telegram, borrado/exportación o pantallas de gestión. ObjectStorage persiste originales autorizados, pero V09 define el borrado y barreras contra resurrección. No hay garantía exactly-once para HTTP externo: V07 persistirá intentos antes de Telegram y resolverá la ambigüedad como `unknown`.
 
 La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.md) fija para V05 `gpt-5.6-terra` configurable con esfuerzo `medium`, `store: false`, confirmación explícita del proyecto y bloqueo total de red para `local-only`. Distingue la política de no entrenamiento de la retención de monitoreo de abuso y no presume ZDR.
 
 ## Estado
 
-| Hito    | Resultado                                                                    | Estado                                                        |
-| ------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| V01     | Contratos, demo, monorepo, Compose y CI                                      | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.         |
-| V02     | Memoria segura, repositorios y autenticación                                 | Lista para integración según [el acta](docs/sessions/V02.md). |
-| V03     | Runtime durable                                                              | Pendiente.                                                    |
-| V04–V10 | Gmail, extracción, reconciliación, Telegram, web, ciclo de vida y validación | Pendiente.                                                    |
+| Hito    | Resultado                                                                    | Estado                                                |
+| ------- | ---------------------------------------------------------------------------- | ----------------------------------------------------- |
+| V01     | Contratos, demo, monorepo, Compose y CI                                      | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
+| V02     | Memoria segura, repositorios y autenticación                                 | Integrada en `origin/main` (`597fd87`).               |
+| V03     | Runtime durable                                                              | En validación para integración.                       |
+| V04–V10 | Gmail, extracción, reconciliación, Telegram, web, ciclo de vida y validación | Pendiente.                                            |

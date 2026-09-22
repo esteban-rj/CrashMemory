@@ -1,0 +1,25 @@
+{
+  "name": "@crashmemory/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx test/runtime.integration.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.982.0",
+    "@crashmemory/contracts": "workspace:*",
+    "@crashmemory/db": "workspace:*",
+    "bullmq": "5.81.5",
+    "ioredis": "5.11.1",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "8.15.6"
+  }
+}

@@ -9,6 +9,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@crashmemory/contracts": "workspace:*"
+    "@crashmemory/contracts": "workspace:*",
+    "@crashmemory/db": "workspace:*",
+    "@crashmemory/runtime": "workspace:*"
   }
 }
