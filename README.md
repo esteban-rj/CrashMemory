@@ -17,6 +17,8 @@ La pestaña Avisos consulta todos los cursores de `/api/v1/reminders` y permite 
 
 El callback público de Gmail usa `/api/v1/gmail/callback` a través del rewrite y la API devuelve `303` a la ruta web. Los botones de desconexión Gmail y desvinculación Telegram llaman las rutas de ciclo de vida acordadas; mientras esas rutas no estén integradas responden en la UI como “Acción no disponible todavía.”
 
+La entrega V08 está integrada en `origin/main` en `bbc28e5e38570727c0e15eda617afc6d50bfa204`; su CI de producto (`35755880950`) terminó correctamente.
+
 ## Reconciliación V06 y API
 
 V06 conserva un ID lógico por factura con emisor y número de factura/recibo/liquidación comprobados en la misma cita. Una cuenta de cliente por sí sola no une facturas mensuales. Candidatos sin ancla quedan separados para revisión; un correo más antiguo no revierte silenciosamente un vencimiento reciente. Cada cambio crea una versión inmutable. Confirmar o corregir protege los campos frente a inferencias futuras; éstas se presentan como conflictos con su propuesta y evidencia. Pagar y descartar cancelan avisos y no se revierten por replay. Sólo las obligaciones `confirmed` con política automática habilitada pueden programar Telegram.
@@ -334,7 +336,8 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V05     | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
 | V06     | Reconciliación                                            | Pendiente.                                                                        |
 | V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
-| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                                                        |
+| V08     | Web mínima                                                | Integrada en `origin/main` (`bbc28e5`); CI de producto `35755880950` `SUCCESS`.   |
+| V09–V10 | Ciclo de vida y validación                                | Pendiente.                                                                        |
 
 ## Gmail V04
 
