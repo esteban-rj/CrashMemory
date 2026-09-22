@@ -1,6 +1,23 @@
 # CrashMemory — Gmail, obligaciones con evidencia y avisos Telegram
 
-CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega. V09 añade desconexión, borrado, exportación y restauración offline con una barrera contra replays. El flujo se valida con servicios locales y proveedores simulados.
+CrashMemory desarrolla el flujo Gmail → obligaciones con evidencia → avisos por Telegram. V04 conecta Gmail y persiste revisiones atómicas; V05 integra el worker de extracción verificable desde cuerpo y PDF de texto; V06 reconcilia candidatos y ofrece API de obligaciones/evidencia; V07 añade el vínculo seguro del bot y los intentos durables de entrega; V08 ofrece la web mínima de gestión; V09 añade desconexión, borrado, exportación y restauración offline con barreras contra replays. El flujo se valida con servicios locales y proveedores simulados.
+
+## Web mínima V08
+
+La web se ejecuta en `apps/web` y consume la API mediante el rewrite de mismo origen. En una terminal, con la API persistente disponible en `4318`, arránquela así:
+
+```bash
+WEB_PORT=3008 API_INTERNAL_URL=http://127.0.0.1:4318 \
+  pnpm --filter @crashmemory/web dev
+```
+
+Abra <http://127.0.0.1:3008> e inicie sesión con el usuario creado por `pnpm db:seed`. La sesión usa la cookie HttpOnly emitida por la API y conserva el CSRF recibido en el login; un `401` devuelve la pantalla de acceso. Desde la interfaz puede conectar Gmail, consultar el estado de sincronización, listar obligaciones, abrir el detalle con historial y evidencia autorizada, ver revisiones de extracción, confirmar/corregir/pagar/descartar, resolver conflictos y generar el código de vínculo de Telegram. Las mutaciones envían `Origin`, JSON, CSRF y `expectedVersion`; un `409` refresca el detalle para evitar sobrescribir otra revisión. Las respuestas pendientes se invalidan al cambiar de sesión y los instantes se muestran usando su zona horaria declarada.
+
+La pestaña Avisos consulta todos los cursores de `/api/v1/reminders` y permite abrir los intentos de cada aviso (`sent`, `failed` o `unknown`). La lista de obligaciones y revisiones también consume `meta.nextCursor`, por lo que no oculta elementos después de la primera página. Cada evidencia muestra su página cuando aplica, permite leer el texto autorizado y ofrece la descarga autenticada de `/source`.
+
+El callback público de Gmail usa `/api/v1/gmail/callback` a través del rewrite y la API devuelve `303` a la ruta web. Los botones de desconexión Gmail y desvinculación Telegram llaman las rutas de ciclo de vida de V09; la API informa si la revocación remota de Google se confirmó.
+
+La entrega V08 está integrada en `origin/main` en `bbc28e5e38570727c0e15eda617afc6d50bfa204`; su CI de producto (`35756161282`) terminó correctamente.
 
 ## Reconciliación V06 y API
 
@@ -300,7 +317,7 @@ Para verificar Gmail y avisos juntos, se ejecutó `pnpm check` seguido de `pnpm 
 
 ## Límites actuales
 
-V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08/V10 completarán el recorrido y V09 define borrado y barreras contra resurrección.
+V05 no implementa OCR, ZDR, precios facturados del proveedor, ruta local de producción ni endpoint HTTP de presupuesto. V07 no activa avisos sin política aprobada, no envía durante pruebas, no implementa un reintento ciego de `unknown` ni una pantalla de operación; V08 ofrece la web mínima y V10 validará el recorrido completo. V09 añade borrado y barreras contra resurrección.
 
 El worker de V05 está integrado, pero el perfil `local-only` aún no dispone de adaptador local de producción. Las pruebas de extremo a extremo usan proveedores simulados; no se ha validado el envío de datos reales a un modelo remoto.
 
@@ -317,9 +334,10 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                                           |
 | V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                                           |
 | V05     | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
-| V06     | Reconciliación                                            | Pendiente.                                                                        |
+| V06     | Reconciliación                                            | Integrada en `origin/main` (`3075b6e`).                                           |
 | V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
-| V08–V10 | Web mínima, ciclo de vida y validación                    | Pendiente.                                                                        |
+| V08     | Web mínima                                                | Integrada en `origin/main` (`bbc28e5`); CI de producto `35756161282` `SUCCESS`.   |
+| V09–V10 | Ciclo de vida y validación                                | Pendiente.                                                                        |
 
 ## Ciclo de vida V09
 
@@ -357,7 +375,7 @@ Si MinIO falla durante un borrado, las claves quedan en `lifecycle_object_cleanu
 LIFECYCLE_CLEANUP_LIMIT=100 pnpm --filter @crashmemory/lifecycle cleanup:retry
 ```
 
-La salida `object_cleanup_retried` informa `removed`, `pending` y `skippedLive`. El comando sólo quita la intención después de confirmar la eliminación del objeto; nunca elimina un blob que todavía aparece en el catálogo. Repítalo hasta que `pending` sea cero o investigue las claves `skippedLive`/fallidas. Gmail renueva el watch durante las 48 horas previas a su expiración al ejecutar el tick configurado; las llamadas HTTP Gmail y OAuth tienen timeout de 30 segundos para permitir drenaje acotado.
+La salida `object_cleanup_retried` informa `removed`, `pending` y `skippedLive`. El comando sólo quita la intención después de confirmar la eliminación del objeto; nunca elimina un blob que todavía aparece en el catálogo. Repítalo hasta que `pending` sea cero o investigue las claves `skippedLive`/fallidas. Gmail renueva el watch durante las 48 horas previas a su expiración al ejecutar el tick configurado; las solicitudes del adaptador Gmail y la renovación del token tienen timeout de 30 segundos para permitir drenaje acotado.
 
 ## Gmail V04
 
@@ -378,11 +396,11 @@ GMAIL_SYNC_ENABLED=true
 
 Con una sesión local ya iniciada, `POST /api/v1/gmail/connect` exige `Origin`, `Content-Type: application/json` y `X-CSRF-Token`; devuelve una URL de consentimiento de Google con `prompt=consent` para obtener un refresh token también al reconectar. El callback exige además la misma cookie de sesión activa que emitió el estado firmado, antes de consumir su nonce. Las credenciales se cifran vinculadas a usuario y conexión. Un `invalid_grant`, la expiración de un refresh token de una app en modo testing o una revocación dejan la conexión en error y requieren volver a autorizarla.
 
-El conector limita el bootstrap a 200 mensajes. Captura el `historyId` antes del histórico y hace catch-up después; cada página persiste revisiones, cuerpo normalizado UTF-8, adjuntos y el evento `source.item.revision.created.v1` en una transacción antes de confirmar el cursor. Replays y notificaciones reordenadas son seguros. Un HTTP 404 de `history.list` marca un resync explícito y nunca expande la ventana autorizada en silencio. El watch se debe renovar a diario; el polling incremental desde el cursor confirmado queda como respaldo para avisos perdidos.
+El conector limita el bootstrap a 200 mensajes. Captura el `historyId` antes del histórico y hace catch-up después; cada página persiste revisiones, cuerpo normalizado UTF-8, adjuntos y el evento `source.item.revision.created.v1` en una transacción antes de confirmar el cursor. Replays y notificaciones reordenadas son seguros. Un HTTP 404 de `history.list` marca un resync explícito y nunca expande la ventana autorizada en silencio. El watch se renueva durante las 48 horas previas a su expiración; el polling incremental desde el cursor confirmado queda como respaldo para avisos perdidos.
 
 El webhook `POST /webhooks/google/gmail` acepta una notificación Pub/Sub sólo con OIDC cuyo `aud` coincide con `GOOGLE_PUBSUB_AUDIENCE`, cuyo emisor es Google y cuyo correo verificado coincide con `GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL`. Persiste la señal `historyId` como disparador durable y no mueve `sync_cursors`; únicamente el catch-up que ya guardó todas sus páginas puede hacerlo. Configure en Pub/Sub la misma audiencia y la URL pública HTTPS del webhook. El cuerpo de un correo, adjuntos y tokens no se registran en logs.
 
-El scheduler ejecuta el conector real cuando `GMAIL_SYNC_ENABLED=true`: descifra el refresh token, obtiene un access token, consume wakeups, hace polling incremental de respaldo, recupera un `historyId` vencido con resync limitado y renueva watch durante las 48 horas previas a su expiración. `GMAIL_SYNC_INTERVAL_MS` predetermina cinco minutos; el watch se renueva diariamente bajo esa política. Si Google devuelve `invalid_grant`, conserva el wakeup y deja la conexión en `error` para que el usuario la vuelva a autorizar.
+El scheduler ejecuta el conector real cuando `GMAIL_SYNC_ENABLED=true`: descifra el refresh token, obtiene un access token, consume wakeups, hace polling incremental de respaldo, recupera un `historyId` vencido con resync limitado y renueva watch durante las 48 horas previas a su expiración. `GMAIL_SYNC_INTERVAL_MS` predetermina cinco minutos. Si Google devuelve `invalid_grant`, conserva el wakeup y deja la conexión en `error` para que el usuario la vuelva a autorizar.
 
 La verificación V04 se ejecutó con PostgreSQL aislado en `54332`:
 
