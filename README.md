@@ -213,7 +213,7 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 | V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`. |
 | V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).               |
 | V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).               |
-| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en esta entrega.                            |
+| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).               |
 | V05     | ModelGateway, presupuesto y extracción verificable        | En validación en `codex/v05-extraction`.              |
 | V06–V10 | Reconciliación, Telegram, web, ciclo de vida y validación | Pendiente.                                            |
 
