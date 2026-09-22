@@ -327,17 +327,18 @@ La [decisión de modelo remoto y privacidad](docs/adr/0002-remote-model-privacy.
 
 ## Estado
 
-| Hito    | Resultado                                                 | Estado                                                                            |
-| ------- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| V01     | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.                             |
-| V02     | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).                                           |
-| V03     | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                                           |
-| V04     | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                                           |
-| V05     | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
-| V06     | Reconciliación                                            | Integrada en `origin/main` (`3075b6e`).                                           |
-| V07     | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
-| V08     | Web mínima                                                | Integrada en `origin/main` (`bbc28e5`); CI de producto `35756161282` `SUCCESS`.   |
-| V09–V10 | Ciclo de vida y validación                                | Pendiente.                                                                        |
+| Hito | Resultado                                                 | Estado                                                                            |
+| ---- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| V01  | Contratos, demo, monorepo, Compose y CI                   | Integrada en `origin/main` (`48cd329`); CI `SUCCESS`.                             |
+| V02  | Memoria segura, repositorios y autenticación              | Integrada en `origin/main` (`597fd87`).                                           |
+| V03  | Runtime durable                                           | Integrada en `origin/main` (`c098b6d`).                                           |
+| V04  | OAuth Gmail, MIME/PDF, sync recuperable y webhook Pub/Sub | Integrada en `origin/main` (`7e430cf`).                                           |
+| V05  | ModelGateway, presupuesto y worker de extracción          | Integrada mediante avance rápido serial; validación real con proveedor pendiente. |
+| V06  | Reconciliación                                            | Integrada en `origin/main` (`3075b6e`).                                           |
+| V07  | Vínculo Telegram, recordatorios e intentos durables       | Integrada en `origin/main` (`def5f8d`).                                           |
+| V08  | Web mínima                                                | Integrada en `origin/main` (`bbc28e5`); CI de producto `35756161282` `SUCCESS`.   |
+| V09  | Ciclo de vida, exportación y restore offline              | Integrada en `origin/main` (`7bac256`); CI `35758867730` `SUCCESS`.               |
+| V10  | Validación del MVP 1                                      | Pendiente.                                                                        |
 
 ## Ciclo de vida V09
 
