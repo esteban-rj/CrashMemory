@@ -11,6 +11,55 @@
   color: var(--ink);
   background: var(--paper);
 }
+.alerts-panel {
+  max-width: 55rem;
+}
+.reminder-list {
+  list-style: none;
+  padding: 0;
+  margin: 1rem -1.25rem 0;
+}
+.reminder-item {
+  border-top: 1px solid var(--line);
+  padding: 1rem 1.25rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.7rem;
+}
+.reminder-item strong,
+.reminder-item small {
+  display: block;
+}
+.reminder-item small {
+  color: var(--muted);
+  margin-top: 0.3rem;
+}
+.attempts {
+  grid-column: 1/-1;
+  background: var(--paper);
+  border-radius: 8px;
+  padding: 0.7rem;
+}
+.attempt {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 0.8rem;
+}
+.attempt:last-child {
+  border-bottom: 0;
+}
+.attempt .state {
+  margin-top: 0;
+}
+.review-box p {
+  line-height: 1.4;
+}
+.review-box small {
+  color: var(--muted);
+}
 * {
   box-sizing: border-box;
 }

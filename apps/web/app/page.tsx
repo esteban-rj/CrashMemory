@@ -43,6 +43,27 @@ type Gmail = {
   lastSyncAt: string | null;
   errorCode: string | null;
 };
+type Reminder = {
+  id: string;
+  obligationId?: string;
+  scheduledFor: string;
+  kind?: string;
+  state?: string;
+};
+type Attempt = {
+  id: string;
+  attemptNumber: number;
+  preparedAt: string;
+  outcome?: "sent" | "failed" | "unknown";
+  errorCode?: string | null;
+};
+type Review = {
+  id: string;
+  sourceItemRevisionId: string;
+  state: string;
+  reasonCode?: string;
+  createdAt?: string;
+};
 const labels: Record<string, string> = {
   candidate: "Por confirmar",
   confirmed: "Confirmada",
@@ -67,6 +88,13 @@ const dueText = (due: Obligation["due"]) =>
         : "Fecha no disponible";
 const money = (value: Obligation["amount"]) =>
   `${value.currency} ${value.amount}`;
+const reviewReason = (code?: string) =>
+  ({
+    pdf_requires_manual_review:
+      "El PDF necesita revisión manual (por ejemplo, está escaneado o protegido).",
+    invalid_evidence: "La evidencia extraída no pudo validarse.",
+    extraction_failed: "La extracción falló y debe revisarse.",
+  })[code ?? ""] ?? "La extracción quedó bloqueada para revisión manual.";
 
 export default function HomePage() {
   const [csrf, setCsrf] = useState("");
@@ -86,12 +114,24 @@ export default function HomePage() {
     state?: string;
     linkedAt?: string | null;
   } | null>(null);
-  const [reviews, setReviews] = useState<
-    Array<{ id: string; state: string; reasonCode?: string }>
-  >([]);
-  const [view, setView] = useState<"obligations" | "connections">(
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [attempts, setAttempts] = useState<Record<string, Attempt[]>>({});
+  const [view, setView] = useState<"obligations" | "connections" | "alerts">(
     "obligations",
   );
+  const clearSession = useCallback(() => {
+    setUser(null);
+    setCsrf("");
+    setSelected(null);
+    setObligations([]);
+    setGmail([]);
+    setTelegram(null);
+    setReviews([]);
+    setReminders([]);
+    setAttempts({});
+    sessionStorage.removeItem("crashmemory.session");
+  }, []);
   const request = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
       const response = await fetch(path, {
@@ -103,9 +143,7 @@ export default function HomePage() {
         },
       });
       if (response.status === 401) {
-        setUser(null);
-        setCsrf("");
-        setSelected(null);
+        clearSession();
         throw new Error("Tu sesión terminó. Inicia sesión de nuevo.");
       }
       const payload = (await response
@@ -120,24 +158,56 @@ export default function HomePage() {
       }
       return payload.data;
     },
-    [],
+    [clearSession],
   );
+  const requestPage = useCallback(
+    async <T,>(path: string): Promise<Envelope<T>> => {
+      const response = await fetch(path, { credentials: "include" });
+      if (response.status === 401) {
+        clearSession();
+        throw new Error("Tu sesión terminó. Inicia sesión de nuevo.");
+      }
+      const payload = (await response
+        .json()
+        .catch(() => ({}))) as Envelope<T> & { error?: { message?: string } };
+      if (!response.ok)
+        throw new Error(
+          payload.error?.message ?? "No se pudo cargar la página.",
+        );
+      return payload;
+    },
+    [clearSession],
+  );
+  async function allPages<T>(path: string, limit: number): Promise<T[]> {
+    const result: T[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const separator = path.includes("?") ? "&" : "?";
+      const page = await requestPage<T[]>(
+        `${path}${separator}limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      result.push(...page.data);
+      cursor = page.meta?.nextCursor;
+    } while (cursor);
+    return result;
+  }
   const load = useCallback(async () => {
-    const [list, gmailState, telegramState, reviewState] = await Promise.all([
-      request<Obligation[]>("/api/v1/obligations?limit=100"),
-      request<Gmail[]>("/api/v1/gmail"),
-      request<{ linked?: boolean; state?: string; linkedAt?: string | null }>(
-        "/api/v1/telegram/status",
-      ),
-      request<Array<{ id: string; state: string; reasonCode?: string }>>(
-        "/api/v1/extraction/reviews?limit=25",
-      ),
-    ]);
+    const [list, gmailState, telegramState, reviewState, reminderState] =
+      await Promise.all([
+        allPages<Obligation>("/api/v1/obligations", 100),
+        request<Gmail[]>("/api/v1/gmail"),
+        request<{ linked?: boolean; state?: string; linkedAt?: string | null }>(
+          "/api/v1/telegram/status",
+        ),
+        allPages<Review>("/api/v1/extraction/reviews", 25),
+        allPages<Reminder>("/api/v1/reminders", 25),
+      ]);
     setObligations(list);
     setGmail(gmailState);
     setTelegram(telegramState);
     setReviews(reviewState);
-  }, [request]);
+    setReminders(reminderState);
+  }, [request, requestPage]);
   useEffect(() => {
     const saved = sessionStorage.getItem("crashmemory.session");
     if (saved) {
@@ -253,6 +323,51 @@ export default function HomePage() {
       setMessage((error as Error).message);
     }
   }
+  async function disconnectGmail(connectionId: string) {
+    try {
+      await request("/api/v1/lifecycle/gmail/disconnect", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrf },
+        body: JSON.stringify({ connectionId }),
+      });
+      await load();
+      setMessage("Gmail desconectado. Los datos históricos se conservaron.");
+    } catch (error) {
+      setMessage(
+        (error as Error).message.includes("No se pudo")
+          ? "La desconexión estará disponible al integrar el ciclo de vida V09."
+          : (error as Error).message,
+      );
+    }
+  }
+  async function unlinkTelegram() {
+    try {
+      await request("/api/v1/lifecycle/telegram/unlink", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrf },
+        body: "{}",
+      });
+      await load();
+      setMessage("Telegram desvinculado.");
+    } catch (error) {
+      setMessage(
+        (error as Error).message.includes("No se pudo")
+          ? "La desvinculación estará disponible al integrar el ciclo de vida V09."
+          : (error as Error).message,
+      );
+    }
+  }
+  async function showAttempts(reminderId: string) {
+    try {
+      const values = await allPages<Attempt>(
+        `/api/v1/reminders/${reminderId}/attempts`,
+        25,
+      );
+      setAttempts((previous) => ({ ...previous, [reminderId]: values }));
+    } catch (error) {
+      setMessage((error as Error).message);
+    }
+  }
   async function logout() {
     try {
       await request("/api/v1/auth/logout", {
@@ -260,15 +375,11 @@ export default function HomePage() {
         headers: { "X-CSRF-Token": csrf },
         body: "{}",
       });
+      setMessage("Sesión cerrada.");
+    } catch (error) {
+      setMessage((error as Error).message);
     } finally {
-      setUser(null);
-      setCsrf("");
-      setSelected(null);
-      setObligations([]);
-      setGmail([]);
-      setTelegram(null);
-      setReviews([]);
-      sessionStorage.removeItem("crashmemory.session");
+      clearSession();
     }
   }
   if (!user)
@@ -346,6 +457,12 @@ export default function HomePage() {
         >
           Conexiones
         </button>
+        <button
+          className={view === "alerts" ? "active" : ""}
+          onClick={() => setView("alerts")}
+        >
+          Avisos
+        </button>
       </nav>
       {message && (
         <p className="notice" role="status">
@@ -358,6 +475,14 @@ export default function HomePage() {
           telegram={telegram}
           onGmail={connectGmail}
           onTelegram={linkTelegram}
+          onDisconnect={disconnectGmail}
+          onUnlink={unlinkTelegram}
+        />
+      ) : view === "alerts" ? (
+        <Alerts
+          reminders={reminders}
+          attempts={attempts}
+          onAttempts={showAttempts}
         />
       ) : (
         <div className="workspace">
@@ -413,7 +538,16 @@ export default function HomePage() {
             {reviews.length > 0 && (
               <div className="review-box">
                 <h3>Revisiones pendientes</h3>
-                <p>{reviews.length} extracción(es) necesita(n) atención.</p>
+                {reviews.map((review) => (
+                  <p key={review.id}>
+                    <strong>{reviewReason(review.reasonCode)}</strong>
+                    <br />
+                    <small>
+                      Fuente: {review.sourceItemRevisionId} · Estado:{" "}
+                      {labels[review.state] ?? review.state}
+                    </small>
+                  </p>
+                ))}
               </div>
             )}
           </section>
@@ -451,6 +585,8 @@ function Connections({
   telegram,
   onGmail,
   onTelegram,
+  onDisconnect,
+  onUnlink,
 }: {
   gmail: Gmail[];
   telegram: {
@@ -460,6 +596,8 @@ function Connections({
   } | null;
   onGmail: () => void;
   onTelegram: () => void;
+  onDisconnect: (connectionId: string) => void;
+  onUnlink: () => void;
 }) {
   return (
     <section className="connections">
@@ -485,6 +623,12 @@ function Connections({
               {item.errorCode && (
                 <small className="error">Estado: {item.errorCode}</small>
               )}
+              <button
+                className="button-quiet"
+                onClick={() => onDisconnect(item.id)}
+              >
+                Desconectar Gmail
+              </button>
             </div>
           ))
         ) : (
@@ -514,7 +658,95 @@ function Connections({
           </small>
         </div>
         <button onClick={onTelegram}>Generar código de vínculo</button>
+        <button className="button-quiet" onClick={onUnlink}>
+          Desvincular Telegram
+        </button>
       </div>
+    </section>
+  );
+}
+
+function Alerts({
+  reminders,
+  attempts,
+  onAttempts,
+}: {
+  reminders: Reminder[];
+  attempts: Record<string, Attempt[]>;
+  onAttempts: (id: string) => void;
+}) {
+  const outcomeLabel = (outcome?: string) =>
+    outcome === "sent"
+      ? "Enviado"
+      : outcome === "failed"
+        ? "Fallido"
+        : outcome === "unknown"
+          ? "Resultado incierto"
+          : "Pendiente";
+  return (
+    <section className="panel alerts-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">NOTIFICACIONES</p>
+          <h2>Avisos programados</h2>
+        </div>
+        <span className="count">{reminders.length}</span>
+      </div>
+      {reminders.length === 0 ? (
+        <div className="empty">
+          <h3>No hay avisos</h3>
+          <p>
+            Los recordatorios aparecen cuando una obligación confirmada tiene
+            política automática activa.
+          </p>
+        </div>
+      ) : (
+        <ul className="reminder-list">
+          {reminders.map((reminder) => (
+            <li className="reminder-item" key={reminder.id}>
+              <div>
+                <strong>{reminder.kind ?? "Recordatorio"}</strong>
+                <small>
+                  {new Date(reminder.scheduledFor).toLocaleString("es-CO")}
+                </small>
+                <em className={`state ${reminder.state ?? ""}`}>
+                  {labels[reminder.state ?? ""] ??
+                    reminder.state ??
+                    "Pendiente"}
+                </em>
+              </div>
+              <button
+                className="button-quiet"
+                onClick={() => onAttempts(reminder.id)}
+              >
+                Ver intentos
+              </button>
+              {attempts[reminder.id] && (
+                <div className="attempts">
+                  {attempts[reminder.id].length === 0 ? (
+                    <small>Sin intentos registrados.</small>
+                  ) : (
+                    attempts[reminder.id].map((attempt) => (
+                      <div className="attempt" key={attempt.id}>
+                        <span>Intento {attempt.attemptNumber}</span>
+                        <b className={`state ${attempt.outcome ?? ""}`}>
+                          {outcomeLabel(attempt.outcome)}
+                        </b>
+                        <small>
+                          {new Date(attempt.preparedAt).toLocaleString("es-CO")}
+                        </small>
+                        {attempt.errorCode && (
+                          <small className="error">{attempt.errorCode}</small>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -736,7 +968,10 @@ function EvidenceList({
               {item.kind === "pdf_text_fragment" ? "PDF" : "Correo"}
             </strong>
             <p>“{item.quote}”</p>
-            <small>Hash: {item.contentSha256.slice(0, 12)}…</small>
+            <small>
+              Hash: {item.contentSha256.slice(0, 12)}…
+              {item.page ? ` · Página ${item.page}` : ""}
+            </small>
           </div>
           <button
             className="button-quiet"
@@ -758,6 +993,12 @@ function EvidenceList({
             }}
           >
             {open === item.id ? "Ocultar texto" : "Ver texto"}
+          </button>
+          <button
+            className="button-quiet"
+            onClick={() => window.location.assign(`${item.url}/source`)}
+          >
+            Descargar fuente
           </button>
           {open === item.id && <pre>{text}</pre>}
         </div>
