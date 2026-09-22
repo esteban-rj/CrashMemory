@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { inTransaction, type Queryable } from "./client.ts";
 import {
@@ -852,6 +853,385 @@ export class LedgerRepository {
         input.targetId ?? null,
         input.details ?? {},
       ],
+    );
+  }
+}
+
+export interface ModelBudgetReservation {
+  id: string;
+  operationKey: string;
+  attemptNumber: number;
+  reservedAmount: string;
+}
+
+/**
+ * Keeps the mutable budget guard separate from the immutable usage ledger.
+ * A reservation is held before a remote request and an unknown timeout keeps
+ * its maximum cost reserved instead of being treated as a free failure.
+ */
+export class ModelBudgetRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async setLimit(input: {
+    id: string;
+    userId: string;
+    limitAmountUsd: string;
+    periodStart: Date;
+    periodEnd: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO model_budget_limits(
+         id, user_id, currency, limit_amount, period_start, period_end
+       ) VALUES ($1, $2, 'USD', $3, $4, $5)`,
+      [
+        input.id,
+        input.userId,
+        input.limitAmountUsd,
+        input.periodStart,
+        input.periodEnd,
+      ],
+    );
+  }
+
+  async reserve(input: {
+    id: string;
+    userId: string;
+    operationKey: string;
+    attemptNumber: number;
+    maximumCostUsd: string;
+    provider: string;
+    model: string;
+    pricingVersion: string;
+    maximumInputUnits: number;
+    maximumOutputUnits: number;
+    now?: Date;
+  }): Promise<ModelBudgetReservation> {
+    const now = input.now ?? new Date();
+    return inTransaction(this.pool, async (client) => {
+      const limit = await client.query<Record<string, unknown>>(
+        `SELECT id, limit_amount
+         FROM model_budget_limits
+         WHERE user_id = $1 AND currency = 'USD'
+           AND period_start <= $2 AND period_end > $2
+         FOR UPDATE`,
+        [input.userId, now],
+      );
+      const row = limit.rows[0];
+      if (!row) throw new Error("No active USD model budget is configured");
+
+      const used = await client.query<{ amount: string }>(
+        `SELECT COALESCE(sum(
+           CASE WHEN state = 'settled' THEN settled_amount ELSE reserved_amount END
+         ), 0)::text AS amount
+         FROM model_budget_reservations
+         WHERE budget_limit_id = $1
+           AND state IN ('reserved', 'settled', 'unknown')`,
+        [row.id],
+      );
+      const available = await client.query<{ permitted: boolean }>(
+        `SELECT ($1::numeric + $2::numeric) <= $3::numeric AS permitted`,
+        [
+          used.rows[0]?.amount ?? "0",
+          input.maximumCostUsd,
+          String(row.limit_amount),
+        ],
+      );
+      if (!available.rows[0]?.permitted) {
+        throw new Error("Model budget would be exceeded");
+      }
+
+      await client.query(
+        `INSERT INTO model_budget_reservations(
+           id, user_id, budget_limit_id, operation_key, attempt_number,
+           reserved_amount, state
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'reserved')`,
+        [
+          input.id,
+          input.userId,
+          row.id,
+          input.operationKey,
+          input.attemptNumber,
+          input.maximumCostUsd,
+        ],
+      );
+      await this.appendUsage(client, {
+        id: randomUUID(),
+        userId: input.userId,
+        operationKey: input.operationKey,
+        entrySequence: input.attemptNumber * 10 + 1,
+        provider: input.provider,
+        model: input.model,
+        pricingVersion: input.pricingVersion,
+        status: "reserved",
+        inputUnits: input.maximumInputUnits,
+        outputUnits: input.maximumOutputUnits,
+        costUsd: input.maximumCostUsd,
+      });
+      return {
+        id: input.id,
+        operationKey: input.operationKey,
+        attemptNumber: input.attemptNumber,
+        reservedAmount: input.maximumCostUsd,
+      };
+    });
+  }
+
+  async settle(input: {
+    reservationId: string;
+    userId: string;
+    actualCostUsd: string;
+    inputUnits: number;
+    outputUnits: number;
+    provider: string;
+    model: string;
+    pricingVersion: string;
+    now?: Date;
+  }): Promise<void> {
+    await this.finish(input, "estimated");
+  }
+
+  async markUnknown(input: {
+    reservationId: string;
+    userId: string;
+    provider: string;
+    model: string;
+    pricingVersion: string;
+    now?: Date;
+  }): Promise<void> {
+    await this.finish(input, "unknown");
+  }
+
+  private async finish(
+    input: {
+      reservationId: string;
+      userId: string;
+      provider: string;
+      model: string;
+      pricingVersion: string;
+      now?: Date;
+      actualCostUsd?: string;
+      inputUnits?: number;
+      outputUnits?: number;
+    },
+    status: "estimated" | "unknown",
+  ): Promise<void> {
+    await inTransaction(this.pool, async (client) => {
+      const reservation = await client.query<Record<string, unknown>>(
+        `SELECT operation_key, attempt_number, reserved_amount, state
+         FROM model_budget_reservations
+         WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+        [input.reservationId, input.userId],
+      );
+      const row = reservation.rows[0];
+      if (!row) throw new Error("Model budget reservation was not found");
+      if (row.state !== "reserved") return;
+      if (status === "estimated" && !input.actualCostUsd) {
+        throw new Error(
+          "An estimated model cost is required to settle a reservation",
+        );
+      }
+      const cost =
+        status === "estimated"
+          ? input.actualCostUsd!
+          : String(row.reserved_amount);
+      await client.query(
+        `UPDATE model_budget_reservations
+         SET state = $3, settled_amount = CASE WHEN $3 = 'settled' THEN $4::numeric END,
+             settled_at = $5
+         WHERE id = $1 AND user_id = $2`,
+        [
+          input.reservationId,
+          input.userId,
+          status === "estimated" ? "settled" : "unknown",
+          cost,
+          input.now ?? new Date(),
+        ],
+      );
+      await this.appendUsage(client, {
+        id: randomUUID(),
+        userId: input.userId,
+        operationKey: String(row.operation_key),
+        entrySequence: Number(row.attempt_number) * 10 + 2,
+        provider: input.provider,
+        model: input.model,
+        pricingVersion: input.pricingVersion,
+        status,
+        inputUnits: input.inputUnits,
+        outputUnits: input.outputUnits,
+        costUsd: cost,
+      });
+    });
+  }
+
+  private async appendUsage(
+    db: Queryable,
+    input: {
+      id: string;
+      userId: string;
+      operationKey: string;
+      entrySequence: number;
+      provider: string;
+      model: string;
+      pricingVersion: string;
+      status: "reserved" | "estimated" | "unknown";
+      inputUnits?: number;
+      outputUnits?: number;
+      costUsd: string;
+    },
+  ): Promise<void> {
+    await db.query(
+      `INSERT INTO model_usage_ledger(
+         id, user_id, operation_key, entry_sequence, provider, model, pricing_version,
+         status, input_units, output_units, cost_amount, cost_currency
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'USD')`,
+      [
+        input.id,
+        input.userId,
+        input.operationKey,
+        input.entrySequence,
+        input.provider,
+        input.model,
+        input.pricingVersion,
+        input.status,
+        input.inputUnits ?? null,
+        input.outputUnits ?? null,
+        input.costUsd,
+      ],
+    );
+  }
+}
+
+export class ExtractionRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async enqueue(input: {
+    id: string;
+    userId: string;
+    sourceItemRevisionId: string;
+    privacyProfile: "local-only" | "remote-allowed";
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO extraction_jobs(id, user_id, source_item_revision_id, privacy_profile, state)
+       VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT (user_id, source_item_revision_id) DO NOTHING`,
+      [
+        input.id,
+        input.userId,
+        input.sourceItemRevisionId,
+        input.privacyProfile,
+      ],
+    );
+  }
+
+  async claimNext(): Promise<{
+    id: string;
+    userId: string;
+    sourceItemRevisionId: string;
+    privacyProfile: "local-only" | "remote-allowed";
+  } | null> {
+    return inTransaction(this.pool, async (client) => {
+      const result = await client.query<Record<string, unknown>>(
+        `WITH next AS (SELECT id FROM extraction_jobs WHERE state = 'pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+         UPDATE extraction_jobs j SET state = 'running', attempts = attempts + 1 FROM next WHERE j.id = next.id
+         RETURNING j.id, j.user_id, j.source_item_revision_id, j.privacy_profile`,
+      );
+      const row = result.rows[0];
+      return row
+        ? {
+            id: String(row.id),
+            userId: String(row.user_id),
+            sourceItemRevisionId: String(row.source_item_revision_id),
+            privacyProfile: row.privacy_profile as
+              "local-only" | "remote-allowed",
+          }
+        : null;
+    });
+  }
+
+  async complete(input: {
+    jobId: string;
+    userId: string;
+    candidates: Array<{
+      id: string;
+      title: string;
+      amount: Money;
+      due: DueValue;
+      evidence: Array<{
+        id: string;
+        kind: "email_body_fragment" | "pdf_text_fragment";
+        sourceItemRevisionId: string;
+        attachmentId?: string;
+        page?: number;
+        startOffset: number;
+        endOffset: number;
+        quote: string;
+        contentSha256: string;
+      }>;
+    }>;
+  }): Promise<void> {
+    await inTransaction(this.pool, async (client) => {
+      for (const candidate of input.candidates) {
+        for (const evidence of candidate.evidence) {
+          await client.query(
+            `INSERT INTO evidence(id, user_id, source_item_revision_id, kind, attachment_id, page, start_offset, end_offset, quote, content_sha256)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [
+              evidence.id,
+              input.userId,
+              evidence.sourceItemRevisionId,
+              evidence.kind,
+              evidence.attachmentId ?? null,
+              evidence.page ?? null,
+              evidence.startOffset,
+              evidence.endOffset,
+              evidence.quote,
+              evidence.contentSha256,
+            ],
+          );
+        }
+        await client.query(
+          `INSERT INTO extraction_candidates(id, user_id, source_item_revision_id, title, amount, currency, due, state)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'ready')`,
+          [
+            candidate.id,
+            input.userId,
+            candidate.evidence[0]!.sourceItemRevisionId,
+            candidate.title,
+            candidate.amount.amount,
+            candidate.amount.currency,
+            candidate.due,
+          ],
+        );
+        for (const evidence of candidate.evidence)
+          await client.query(
+            "INSERT INTO extraction_candidate_evidence(candidate_id, evidence_id) VALUES ($1, $2)",
+            [candidate.id, evidence.id],
+          );
+        await client.query(
+          `INSERT INTO outbox_events(id, user_id, event_type, aggregate_type, aggregate_id, idempotency_key, occurred_at, payload)
+           VALUES ($1,$2,'obligation.candidate.created.v1','obligation',$3,$4,now(),$5)`,
+          [
+            randomUUID(),
+            input.userId,
+            candidate.id,
+            `extraction:${candidate.id}`,
+            {
+              obligationId: candidate.id,
+              sourceItemRevisionId: candidate.evidence[0]!.sourceItemRevisionId,
+            },
+          ],
+        );
+      }
+      await client.query(
+        "UPDATE extraction_jobs SET state = 'completed', completed_at = now(), last_error_code = NULL WHERE id = $1 AND user_id = $2",
+        [input.jobId, input.userId],
+      );
+    });
+  }
+
+  async fail(jobId: string, userId: string, code: string): Promise<void> {
+    await this.pool.query(
+      "UPDATE extraction_jobs SET state = 'manual_review', last_error_code = $3, completed_at = now() WHERE id = $1 AND user_id = $2",
+      [jobId, userId, code.slice(0, 160)],
     );
   }
 }
