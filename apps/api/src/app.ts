@@ -58,14 +58,12 @@ export function buildApp(
 
   if (options.pool && options.auth) {
     registerAuthRoutes(app, options.pool, options.auth);
-    if (options.telegramLinks) {
-      registerTelegramRoutes(
-        app,
-        options.pool,
-        options.auth,
-        options.telegramLinks,
-      );
-    }
+    registerTelegramRoutes(
+      app,
+      options.pool,
+      options.auth,
+      options.telegramLinks,
+    );
   } else {
     app.post("/api/v1/auth/login", async (request, reply) =>
       reply.code(503).send({

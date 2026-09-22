@@ -808,6 +808,25 @@ export interface DeliveryAttemptRecord {
   outcome: "sent" | "failed" | "unknown" | null;
 }
 
+export interface ReminderStatusRecord {
+  id: string;
+  obligationId: string;
+  obligationVersionId: string;
+  targetVersion: number;
+  state: "scheduled" | "cancelled" | "delivering" | "resolved";
+  scheduledFor: string;
+}
+
+export interface DeliveryAttemptStatusRecord {
+  id: string;
+  reminderId: string;
+  attemptNumber: number;
+  state: "prepared" | "resolved";
+  outcome: "sent" | "failed" | "unknown" | null;
+  preparedAt: string;
+  resolvedAt: string | null;
+}
+
 /** Durable persistence for bot linking and the external-delivery boundary. */
 export class NotificationRepository {
   constructor(private readonly db: Queryable) {}
@@ -915,6 +934,81 @@ export class NotificationRepository {
         authTag: (row.auth_tag as Buffer).toString("base64"),
       },
     };
+  }
+
+  async linkStatus(
+    userId: string,
+  ): Promise<{ linked: boolean; linkedAt: string | null }> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT linked_at::text AS linked_at FROM telegram_recipients
+       WHERE user_id = $1 AND state = 'active'`,
+      [userId],
+    );
+    return result.rowCount === 1
+      ? { linked: true, linkedAt: String(result.rows[0]?.linked_at) }
+      : { linked: false, linkedAt: null };
+  }
+
+  async listReminders(input: {
+    userId: string;
+    limit: number;
+    cursor?: { scheduledFor: string; id: string };
+  }): Promise<ReminderStatusRecord[]> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id, obligation_id, obligation_version_id, target_version, state,
+              scheduled_for::text AS scheduled_for
+       FROM reminders
+       WHERE user_id = $1
+         AND ($2::timestamptz IS NULL OR (scheduled_for, id) > ($2::timestamptz, $3::uuid))
+       ORDER BY scheduled_for, id LIMIT $4`,
+      [
+        input.userId,
+        input.cursor?.scheduledFor ?? null,
+        input.cursor?.id ?? null,
+        input.limit,
+      ],
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      obligationId: String(row.obligation_id),
+      obligationVersionId: String(row.obligation_version_id),
+      targetVersion: Number(row.target_version),
+      state: row.state as ReminderStatusRecord["state"],
+      scheduledFor: String(row.scheduled_for),
+    }));
+  }
+
+  async listDeliveryAttempts(input: {
+    userId: string;
+    reminderId: string;
+    limit: number;
+    cursor?: { preparedAt: string; id: string };
+  }): Promise<DeliveryAttemptStatusRecord[]> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT a.id, a.reminder_id, a.attempt_number, a.prepared_at::text AS prepared_at,
+              r.outcome, r.resolved_at::text AS resolved_at
+       FROM notification_delivery_attempts a
+       LEFT JOIN notification_delivery_resolutions r ON r.attempt_id = a.id
+       WHERE a.user_id = $1 AND a.reminder_id = $2
+         AND ($3::timestamptz IS NULL OR (a.prepared_at, a.id) > ($3::timestamptz, $4::uuid))
+       ORDER BY a.prepared_at, a.id LIMIT $5`,
+      [
+        input.userId,
+        input.reminderId,
+        input.cursor?.preparedAt ?? null,
+        input.cursor?.id ?? null,
+        input.limit,
+      ],
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      reminderId: String(row.reminder_id),
+      attemptNumber: Number(row.attempt_number),
+      state: row.outcome === null ? "prepared" : "resolved",
+      outcome: (row.outcome as DeliveryAttemptStatusRecord["outcome"]) ?? null,
+      preparedAt: String(row.prepared_at),
+      resolvedAt: row.resolved_at === null ? null : String(row.resolved_at),
+    }));
   }
 
   async isDeliveryCurrent(input: {

@@ -173,6 +173,8 @@ El enlace del bot requiere `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` y el mismo keyri
 
 Los avisos automáticos están apagados inicialmente: la calidad de las inferencias aún no está medida. Sólo después de aprobar esa política se configura `NOTIFICATIONS_AUTOMATIC_ENABLED=true` tanto en worker como en scheduler. Con esa opción, una obligación `confirmed` con vencimiento genera los avisos `one_day` (24 horas antes) y `due`; el scheduler convierte los recordatorios vencidos en eventos de outbox. Una actualización, pago, descarte o borrado publica `obligation.reminder.reschedule.requested.v1` y cancela los recordatorios que sigan pendientes.
 
+La web mínima puede consultar las APIs autenticadas `GET /api/v1/telegram/status`, `GET /api/v1/reminders?limit=25&cursor=…` y `GET /api/v1/reminders/:reminderId/attempts?limit=25&cursor=…`. El límite está acotado a 100 y el cursor es opaco. Las respuestas sólo contienen estados, fechas e identificadores propios; nunca exponen chat ID, código de vínculo, ciphertext, mensaje del proveedor ni detalle de error.
+
 Antes de `sendMessage`, V07 inserta un intento append-only en `notification_delivery_attempts` y cierra toda transacción de dominio. Sólo entonces llama a Telegram y persiste una resolución append-only: `sent`, `failed` o `unknown`. Si un proceso cae después de preparar el intento, el siguiente procesamiento lo deja `unknown` sin enviar otra vez. Los `unknown` requieren revisión operativa; no hay reintento automático ni endpoint de reenvío. Las tablas anteriores de V02 siguen inmutables.
 
 La verificación sintética completa, sin tráfico a Telegram, usa una respuesta HTTP simulada y una base aislada:
