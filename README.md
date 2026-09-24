@@ -7,7 +7,7 @@ La validación V10 usa datos y proveedores simulados. Gmail, Telegram y el model
 ## Requisitos y preparación
 
 - Docker Compose con el contexto activo; Node `24.14.1` y pnpm `11.25.0` sólo si ejecuta los procesos en el host. Este repositorio también se probó con `--context colima-crashmemory`.
-- PostgreSQL 17, Redis y MinIO incluidos en [infra/compose/docker-compose.yml](infra/compose/docker-compose.yml).
+- PostgreSQL 17, Redis y MinIO incluidos en [infra/compose/docker-compose.yml](infra/compose/docker-compose.yml). La imagen MinIO se fija por digest en GHCR y [Coollabs la compila desde el código oficial](https://github.com/coollabsio/minio).
 
 Cree un archivo privado de configuración:
 
