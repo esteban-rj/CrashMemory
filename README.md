@@ -46,7 +46,7 @@ docker compose --env-file .env -f infra/compose/docker-compose.yml -f infra/comp
 docker compose --env-file .env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.app.yml down
 ```
 
-El puerto API sólo se publica en 127.0.0.1; para Pub/Sub real se necesita el proxy HTTPS indicado más adelante. Después de cambiar código, reconstruya con el comando up anterior. Al detenerlos, Docker concede hasta tres minutos a API, worker y scheduler para drenar trabajos en curso. El journal del host y los volúmenes de datos se conservan al ejecutar down sin la opción -v.
+El puerto API sólo se publica en 127.0.0.1; para Pub/Sub real se necesita el proxy HTTPS indicado más adelante. Después de cambiar código, reconstruya con el comando up anterior. Al detenerlos, Docker concede hasta tres minutos a API, worker y scheduler para drenar trabajos en curso. El journal del host y los volúmenes de datos se conservan al ejecutar down sin la opción -v. La integración Docker D01 pasó la [CI de main](https://github.com/esteban-rj/CrashMemory/actions/runs/36068049545) sobre el commit `ea33a16e923236f29d5c5cd0ba0662393f9a1e3c`.
 
 ## Ejecución de procesos en el host
 
