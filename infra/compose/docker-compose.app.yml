@@ -1,0 +1,139 @@
+# Add this file after docker-compose.yml to run the entire MVP in Docker.
+x-app: &app
+  image: crashmemory-app:local
+  build:
+    context: ../..
+    dockerfile: infra/compose/Dockerfile
+  env_file:
+    - ../../.env
+  environment: &app-environment
+    DATABASE_URL: ${DOCKER_DATABASE_URL:?Set DOCKER_DATABASE_URL with postgres as host}
+    REDIS_URL: redis://redis:6379
+    OBJECT_STORAGE_ENDPOINT: http://minio:9000
+    OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?Set OBJECT_STORAGE_BUCKET}
+    OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+    OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    API_INTERNAL_URL: http://api:4310
+    LIFECYCLE_JOURNAL_PATH: /data/lifecycle/journal.log
+  volumes:
+    - type: bind
+      source: ${LIFECYCLE_JOURNAL_DIR:?Set LIFECYCLE_JOURNAL_DIR}
+      target: /data/lifecycle
+
+services:
+  bucket:
+    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$OBJECT_STORAGE_BUCKET"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?Set OBJECT_STORAGE_BUCKET}
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  migrate:
+    <<: *app
+    command: ["node", "--import", "tsx", "packages/db/src/cli/migrate.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  seed:
+    <<: *app
+    command: ["node", "--import", "tsx", "packages/db/src/cli/seed.ts"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  api:
+    <<: *app
+    stop_grace_period: 3m
+    command: ["node", "--import", "tsx", "apps/api/src/server.ts"]
+    environment:
+      <<: *app-environment
+      API_BIND_HOST: 0.0.0.0
+      API_PORT: "4310"
+    ports:
+      - "127.0.0.1:${API_PORT:-4310}:4310"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      bucket:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4310/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    stop_grace_period: 3m
+    command: ["node", "--import", "tsx", "apps/worker/src/worker.ts"]
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scheduler:
+    <<: *app
+    stop_grace_period: 3m
+    command: ["node", "--import", "tsx", "apps/scheduler/src/scheduler.ts"]
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    <<: *app
+    working_dir: /app/apps/web
+    env_file: []
+    environment:
+      API_INTERNAL_URL: http://api:4310
+    volumes: []
+    command:
+      [
+        "node",
+        "node_modules/next/dist/bin/next",
+        "start",
+        "--hostname",
+        "0.0.0.0",
+        "--port",
+        "3000",
+      ]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped

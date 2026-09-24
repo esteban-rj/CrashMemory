@@ -14,6 +14,7 @@ import {
 } from "@crashmemory/security";
 
 const port = Number(process.env.API_PORT ?? 4310);
+const bindHost = process.env.API_BIND_HOST ?? "127.0.0.1";
 const databaseUrl = process.env.DATABASE_URL;
 const pool = databaseUrl ? createPool(databaseUrl) : undefined;
 const cipher =
@@ -124,10 +125,8 @@ const app = buildApp({
 if (pool) app.addHook("onClose", async () => pool.end());
 
 try {
-  await app.listen({ host: "127.0.0.1", port });
-  console.log(
-    `CrashMemory synthetic demo API listening on http://127.0.0.1:${port}`,
-  );
+  await app.listen({ host: bindHost, port });
+  console.log(`CrashMemory API listening on http://${bindHost}:${port}`);
   let stopping = false;
   const shutdown = async (): Promise<void> => {
     if (stopping) return;

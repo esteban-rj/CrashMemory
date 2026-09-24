@@ -6,16 +6,12 @@ La validación V10 usa datos y proveedores simulados. Gmail, Telegram y el model
 
 ## Requisitos y preparación
 
-- Node `24.14.1` y pnpm `11.25.0`.
-- Docker Compose. Los comandos siguientes usan el contexto Docker activo; en este repositorio también se probó `--context colima-crashmemory`.
+- Docker Compose con el contexto activo; Node `24.14.1` y pnpm `11.25.0` sólo si ejecuta los procesos en el host. Este repositorio también se probó con `--context colima-crashmemory`.
 - PostgreSQL 17, Redis y MinIO incluidos en [infra/compose/docker-compose.yml](infra/compose/docker-compose.yml).
 
-Active las versiones fijadas (Volta puede leer los pines de `package.json`), compruebe `node --version`/`pnpm --version`, instale exactamente el lockfile y cree un archivo privado de configuración:
+Cree un archivo privado de configuración:
 
 ```bash
-node --version
-pnpm --version
-pnpm install --frozen-lockfile
 cp .env.example .env
 chmod 600 .env
 ```
@@ -23,6 +19,44 @@ chmod 600 .env
 Complete `.env` fuera de Git. El Compose local crea el usuario PostgreSQL `crashmemory`, la base de `POSTGRES_DB` y escucha en `POSTGRES_PORT`; use `DATABASE_URL=postgresql://crashmemory:<POSTGRES_PASSWORD>@127.0.0.1:<POSTGRES_PORT>/<POSTGRES_DB>`. Defina la misma contraseña protegida tanto en Compose como en la URL antes de exponer el servicio fuera de localhost. MinIO usa `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`; `OBJECT_STORAGE_ACCESS_KEY` y `OBJECT_STORAGE_SECRET_KEY` deben coincidir con ellos. La plantilla Compose trae valores locales conocidos y sólo publica en `127.0.0.1`; sustitúyalos en una copia protegida para cualquier uso que no sea desarrollo aislado.
 
 Genere cada clave de 32 bytes localmente, por ejemplo `openssl rand -base64 32`. El keyring tiene forma JSON `{"v1":"<base64-de-32-bytes>"}` y `CREDENTIAL_ACTIVE_KEY_VERSION=v1`; OAuth y journal reciben sendas cadenas base64. No reutilice claves, no registre `.env` y no pegue sus valores en logs o incidencias.
+
+## Arranque completo con Docker
+
+El Compose anterior levanta sólo PostgreSQL, Redis y MinIO. Para ejecutar también API, worker, scheduler y web sin instalar Node ni pnpm en el host, complete en el mismo archivo .env:
+
+- DATABASE_URL apunta al puerto PostgreSQL publicado en el host, como indica la preparación anterior. DOCKER_DATABASE_URL apunta a la misma base desde Compose: postgresql://crashmemory:<contraseña-URL-encoded>@postgres:5432/<POSTGRES_DB>. Si la contraseña tiene caracteres reservados, codifíquelos para ambas URL; el valor de POSTGRES_PASSWORD en .env conserva la contraseña original.
+- LIFECYCLE_JOURNAL_DIR es un directorio absoluto privado fuera del checkout y de los backups; LIFECYCLE_JOURNAL_PATH en el host apunta al archivo journal.log dentro de ese directorio. Compose monta el directorio y usa /data/lifecycle/journal.log en los contenedores.
+- APP_ORIGIN y GMAIL_REDIRECT_URI conservan la URL visible desde el navegador, por ejemplo http://127.0.0.1:3000. API_INTERNAL_URL, Redis y MinIO se sustituyen por los nombres de servicio sólo dentro de los contenedores. Complete SEED_EMAIL y SEED_PASSWORD antes de iniciar.
+
+Cree el directorio del journal con permisos privados y arranque el conjunto desde la raíz del repositorio:
+
+```bash
+mkdir -p /ruta/privada/crashmemory-journal
+chmod 700 /ruta/privada/crashmemory-journal
+docker compose --env-file .env \
+  -f infra/compose/docker-compose.yml \
+  -f infra/compose/docker-compose.app.yml \
+  up -d --build --wait
+```
+
+El arranque crea el bucket, aplica las migraciones 0001–0009, crea la cuenta local si aún no existe y levanta los cuatro procesos. Abra APP_ORIGIN e inicie sesión con SEED_EMAIL y SEED_PASSWORD. Para ver su estado o detenerlos sin borrar los volúmenes:
+
+```bash
+docker compose --env-file .env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.app.yml ps
+docker compose --env-file .env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.app.yml down
+```
+
+El puerto API sólo se publica en 127.0.0.1; para Pub/Sub real se necesita el proxy HTTPS indicado más adelante. Después de cambiar código, reconstruya con el comando up anterior. Al detenerlos, Docker concede hasta tres minutos a API, worker y scheduler para drenar trabajos en curso. El journal del host y los volúmenes de datos se conservan al ejecutar down sin la opción -v.
+
+## Ejecución de procesos en el host
+
+Para este modo, active Node y pnpm en las versiones fijadas (Volta puede leer los pines de package.json) e instale el lockfile:
+
+```bash
+node --version
+pnpm --version
+pnpm install --frozen-lockfile
+```
 
 Levante los servicios con los puertos y el namespace elegidos en `.env`:
 
