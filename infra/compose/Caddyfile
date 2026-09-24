@@ -1,0 +1,8 @@
+{$APP_ORIGIN} {
+	handle /webhooks/google/gmail {
+		reverse_proxy api:4310
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}
