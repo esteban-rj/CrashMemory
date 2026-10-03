@@ -424,6 +424,22 @@ La implementación V10 quedó integrada en `origin/main` como `18cabbecfaa30e766
 
 La validación con una cuenta Gmail real autorizada, un bot/chat Telegram real y el modelo remoto configurado sigue pendiente. No se ha medido precisión sobre correos reales, disponibilidad del modelo, volumen grande de backup ni entrega externa exactamente una vez.
 
+## Auditoría de seguridad A01
+
+La [auditoría del 2026-10-03](docs/validation/security-requirements-a01.md) encontró que los requisitos de OpenRouter, selección del modelo y permisos efectivos de solo lectura todavía no están cumplidos por completo. El proveedor implementado es OpenAI directo; `MODEL_PROVIDER=openrouter` no lo cambia. Gmail solicita `gmail.readonly`, pero puede incorporar permisos previos y no valida los scopes de los tokens aceptados. Las pruebas fake de extracción no demuestran la idoneidad comparativa del LLM.
+
+Los comandos comprobados para la revisión son:
+
+```bash
+pnpm --filter @crashmemory/model-gateway --filter @crashmemory/gmail \
+  --filter @crashmemory/extraction --filter @crashmemory/security test
+# Con PostgreSQL de prueba aislado y su URL configurada fuera de Git:
+TEST_DATABASE_URL="$A01_TEST_DATABASE_URL" \
+  pnpm --filter @crashmemory/api --filter @crashmemory/gmail test
+```
+
+Pasaron 34 casos distintos; las sondas adicionales reprodujeron aceptación de permisos de escritura y scope ausente. El informe detalla las correcciones pendientes y los controles de cuenta/evaluación que requieren evidencia operativa. Estos resultados no certifican un despliegue real.
+
 ## Alcance
 
 El MVP termina en Gmail → obligación con evidencia → Telegram y web mínima. Chat conversacional, Calendar, WhatsApp, OCR, contratos como entidad, contabilidad, recurrencias, carga manual, embeddings, búsqueda semántica, grafo, MCP y despliegue cloud quedan para versiones posteriores.
