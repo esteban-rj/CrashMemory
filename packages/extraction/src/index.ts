@@ -358,6 +358,12 @@ export class ExtractionService {
       operationKey: input.operationKey,
       attemptNumber: input.attemptNumber,
       request: {
+        // Routing is local and deterministic: a document cannot choose its model.
+        task:
+          input.document.pdfPages.length > 0 ||
+          input.document.body.text.length > 4_000
+            ? "obligation-document"
+            : "obligation-body",
         instructions:
           "Identify one payable obligation only when title, positive amount with ISO currency, due date and exact supporting offsets are present. Offsets are UTF-16 code units relative to exactly one body or PDF page source. A date without a time is a civil date in the supplied user timezone. Do not infer a currency from a bare dollar sign. Mark ambiguity true when more than one interpretation is plausible. Set identity to issuer and a bill-specific invoice, receipt or settlement number only when both occur verbatim in one cited fragment and the number is labeled as such. Account or customer numbers alone are not bill identities. Otherwise set identity null. Never identify an obligation by title, amount or due date.",
         document: sourceText(input.document),

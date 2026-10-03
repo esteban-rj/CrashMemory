@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createRemoteStructuredModel,
   FakeStructuredModel,
   ModelGateway,
   loadRemoteModelConfig,
 } from "@crashmemory/model-gateway";
+import type { ModelBudgetRepository } from "@crashmemory/db";
 import {
   ExtractionService,
   parseCivilDate,
@@ -15,6 +17,105 @@ import {
 
 const body = "Factura de agua COP $ 48.250,50 vence el 15 de octubre de 2026.";
 const amountStart = body.indexOf("COP");
+
+test("OpenRouter routes short bodies to Mistral and PDFs/long bodies to Gemini before sending data", async () => {
+  const config = loadRemoteModelConfig({
+    MODEL_PROVIDER: "openrouter",
+    OPENROUTER_API_KEY: "synthetic",
+    MODEL_REMOTE_ENABLED: "true",
+    MODEL_OPENROUTER_DATA_CONTROLS_CONFIRMED: "true",
+  });
+  const sent: Array<{
+    model: string;
+    provider: Record<string, unknown>;
+    response_format: Record<string, unknown>;
+  }> = [];
+  const ledgerModels: string[] = [];
+  const service = new ExtractionService(
+    new ModelGateway({
+      remoteConfig: config,
+      remote: createRemoteStructuredModel(config, (async (_url, options) => {
+        const request = JSON.parse(String(options?.body));
+        sent.push(request);
+        return new Response(
+          JSON.stringify({
+            model: request.model,
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { content: '{"candidates":[]}' },
+              },
+            ],
+            usage: { prompt_tokens: 100, completion_tokens: 10 },
+          }),
+        );
+      }) as typeof fetch),
+      budget: {
+        reserve: async (input: { model: string }) => {
+          ledgerModels.push(input.model);
+          return { id: "synthetic" };
+        },
+        settle: async () => {},
+        markUnknown: async () => assert.fail("valid requests must settle"),
+      } as unknown as ModelBudgetRepository,
+    }),
+  );
+  for (const document of [
+    {
+      body: {
+        text: "x".repeat(4_000),
+        contentSha256: sha256Text("x".repeat(4_000)),
+      },
+      pdfPages: [],
+    },
+    {
+      body: {
+        text: "x".repeat(4_001),
+        contentSha256: sha256Text("x".repeat(4_001)),
+      },
+      pdfPages: [],
+    },
+    {
+      body: { text: body, contentSha256: sha256Text(body) },
+      pdfPages: [
+        {
+          text: body,
+          contentSha256: sha256Text(body),
+          attachmentId: "synthetic-pdf",
+          page: 1,
+        },
+      ],
+    },
+  ]) {
+    const result = await service.extract({
+      profile: "remote-allowed",
+      userId: "synthetic-user",
+      operationKey: "synthetic-op",
+      attemptNumber: 1,
+      document: {
+        sourceItemRevisionId: "synthetic-revision",
+        userTimeZone: "America/Bogota",
+        ...document,
+      },
+    });
+    assert.equal(result.candidates.length, 0);
+  }
+  const expected = [
+    "mistralai/mistral-small-2603",
+    "google/gemini-3.1-flash-lite",
+    "google/gemini-3.1-flash-lite",
+  ];
+  assert.deepEqual(
+    sent.map((request) => request.model),
+    expected,
+  );
+  assert.deepEqual(ledgerModels, expected);
+  for (const request of sent) {
+    assert.equal(request.provider.data_collection, "deny");
+    assert.equal(request.provider.zdr, true);
+    assert.equal(request.response_format.type, "json_schema");
+  }
+});
 
 test("extracts only a candidate whose exact body evidence verifies", async () => {
   const service = new ExtractionService(

@@ -16,6 +16,7 @@ import {
 } from "@crashmemory/extraction";
 import { PostgresGmailPersistence } from "@crashmemory/gmail/postgres";
 import {
+  createRemoteStructuredModel,
   FakeStructuredModel,
   ModelGateway,
   loadRemoteModelConfig,
@@ -305,24 +306,42 @@ test(
         periodEnd: new Date("2099-01-01T00:00:00Z"),
       });
       let remoteCalls = 0;
+      const remoteConfig = loadRemoteModelConfig({
+        MODEL_PROVIDER: "openrouter",
+        MODEL_REMOTE_ENABLED: "true",
+        MODEL_OPENROUTER_DATA_CONTROLS_CONFIRMED: "true",
+        OPENROUTER_API_KEY: "synthetic",
+      });
       const remoteRunner = new DurableExtractionRunner(
         new ExtractionService(
           new ModelGateway({
-            remoteConfig: loadRemoteModelConfig({
-              MODEL_REMOTE_ENABLED: "true",
-              MODEL_PROJECT_DATA_CONTROLS_CONFIRMED: "true",
-              MODEL_API_KEY: "synthetic",
-            }),
-            remote: {
-              run: async () => {
-                remoteCalls += 1;
-                return {
-                  value: { candidates: [] },
-                  inputTokens: 1,
-                  outputTokens: 1,
-                };
-              },
-            },
+            remoteConfig,
+            remote: createRemoteStructuredModel(remoteConfig, (async (
+              url,
+              options,
+            ) => {
+              remoteCalls += 1;
+              assert.equal(
+                String(url),
+                "https://openrouter.ai/api/v1/chat/completions",
+              );
+              const request = JSON.parse(String(options?.body));
+              assert.equal(request.model, "mistralai/mistral-small-2603");
+              assert.equal(request.provider.data_collection, "deny");
+              assert.equal(request.provider.zdr, true);
+              return new Response(
+                JSON.stringify({
+                  model: request.model,
+                  choices: [
+                    {
+                      finish_reason: "stop",
+                      message: { content: '{"candidates":[]}' },
+                    },
+                  ],
+                  usage: { prompt_tokens: 100, completion_tokens: 10 },
+                }),
+              );
+            }) as typeof fetch),
             budget: new ModelBudgetRepository(pool),
           }),
         ),
@@ -331,6 +350,21 @@ test(
       );
       assert.equal(await remoteRunner.runOne(), "completed");
       assert.equal(remoteCalls, 1);
+      const usage = await new ModelBudgetRepository(pool).listLedger({
+        userId,
+      });
+      assert.equal(usage.length, 2);
+      assert.ok(
+        usage.every(
+          (entry) =>
+            entry.provider === "openrouter" &&
+            entry.model === "mistralai/mistral-small-2603",
+        ),
+      );
+      assert.equal(
+        usage.find((entry) => entry.status === "estimated")?.costAmount,
+        "0.000021",
+      );
 
       await gmail.persistPage({
         reason: "incremental",
