@@ -462,7 +462,9 @@ pnpm --filter @crashmemory/model-gateway --filter @crashmemory/extraction test
 TEST_DATABASE_URL="$A02_TEST_DATABASE_URL" pnpm --filter @crashmemory/worker test
 ```
 
-La cuenta OpenRouter, una inferencia facturable y la precisión real no se certifican mediante fixtures. La [investigación A02](docs/validation/openrouter-cost-benefit-a02.md) y [acta](docs/sessions/A02.md) registran evidencia, validaciones y límites. Mantenga los avisos automáticos deshabilitados hasta medir/aprobar calidad.
+La verificación A02 aprobó `pnpm check` y `pnpm build`, los 25 casos de modelos/extracción y los 4 del worker. Se aplicaron las nueve migraciones existentes sobre PostgreSQL nuevo. La [CI de main](https://github.com/esteban-rj/CrashMemory/actions/runs/37135907791) aprobó el merge `8809d9a48a3d54802b683956201feb3c67157147`; el [acta](docs/sessions/A02.md) registra entrega e integración verificadas.
+
+La cuenta OpenRouter, una inferencia facturable y la precisión real no se certifican mediante fixtures. La [investigación A02](docs/validation/openrouter-cost-benefit-a02.md) registra condiciones y evaluación pendiente. Mantenga los avisos automáticos deshabilitados hasta medir/aprobar calidad.
 
 ## Alcance
 
