@@ -85,6 +85,7 @@ pnpm install --frozen-lockfile
 pnpm --filter @crashmemory/model-gateway --filter @crashmemory/gmail \
   --filter @crashmemory/extraction --filter @crashmemory/security test
 # Contra una base PostgreSQL temporal ya preparada, con URL fuera de Git:
+: "${A01_TEST_DATABASE_URL:?Defina la URL del PostgreSQL temporal}"
 TEST_DATABASE_URL="$A01_TEST_DATABASE_URL" \
   pnpm --filter @crashmemory/api --filter @crashmemory/gmail test
 ```

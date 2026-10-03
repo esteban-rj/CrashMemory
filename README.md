@@ -434,6 +434,7 @@ Los comandos comprobados para la revisión son:
 pnpm --filter @crashmemory/model-gateway --filter @crashmemory/gmail \
   --filter @crashmemory/extraction --filter @crashmemory/security test
 # Con PostgreSQL de prueba aislado y su URL configurada fuera de Git:
+: "${A01_TEST_DATABASE_URL:?Defina la URL del PostgreSQL temporal}"
 TEST_DATABASE_URL="$A01_TEST_DATABASE_URL" \
   pnpm --filter @crashmemory/api --filter @crashmemory/gmail test
 ```
