@@ -1,6 +1,6 @@
 # ADR 0002 — Modelo remoto inicial y barrera de privacidad
 
-- Estado: aceptada para implementación en V05.
+- Estado: implementada en V05; selección inicial sustituida para instalaciones nuevas por [ADR 0003](0003-openrouter-private-task-routing.md). OpenAI directo conserva compatibilidad explícita.
 - Fecha: 2026-09-20.
 - Alcance: ModelGateway de extracción del MVP Gmail → obligaciones.
 

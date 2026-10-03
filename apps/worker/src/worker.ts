@@ -10,9 +10,9 @@ import {
   PostgresExtractionDocumentLoader,
 } from "@crashmemory/extraction";
 import {
+  createRemoteStructuredModel,
   loadRemoteModelConfig,
   ModelGateway,
-  OpenAiResponsesAdapter,
 } from "@crashmemory/model-gateway";
 import {
   NotificationDispatcher,
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     new ExtractionService(
       new ModelGateway({
         remoteConfig: modelConfig,
-        remote: new OpenAiResponsesAdapter(modelConfig),
+        remote: createRemoteStructuredModel(modelConfig),
         budget: new ModelBudgetRepository(pool),
       }),
     ),

@@ -93,16 +93,23 @@ Guarde. El endpoint estará disponible al arrancar; no conecte Gmail aún. Use i
 
 Se usa polling getUpdates: no necesita webhook Telegram ni TELEGRAM_CHAT_ID manual. Un webhook previo bloquea polling; el paso 9 permite retirarlo. [BotFather](https://core.telegram.org/bots/tutorial), [polling](https://core.telegram.org/bots/faq).
 
-## 5. OpenAI: clave y privacidad
+## 5. OpenRouter: clave, privacidad y modelos
 
-1. En [OpenAI Platform](https://platform.openai.com/) cree/seleccione proyecto dedicado.
-2. Configure facturación API y límites/alertas; el presupuesto local del paso 8 es adicional.
-3. Settings → Organization → Data controls: compruebe que compartir entradas/salidas, evaluaciones y otros datos para mejora de modelos esté desactivado para ese proyecto. Si no tiene permisos solicítelo al propietario.
-4. En API keys cree una clave del proyecto con acceso a Responses API; guárdela en MODEL_API_KEY. [Primeros pasos](https://developers.openai.com/api/docs/quickstart).
-5. Mantenga MODEL_NAME=gpt-5.6-terra y MODEL_REASONING_EFFORT=medium. Es la combinación admitida; compruebe acceso en su proyecto. Otra causa remote_model_incompatible y requiere cambiar el adaptador. [Modelo](https://developers.openai.com/api/docs/models/gpt-5.6-terra).
-6. Revise tarifas vigentes y MODEL_PRICING_VERSION, MODEL_INPUT_USD_PER_MILLION y MODEL_OUTPUT_USD_PER_MILLION; la plantilla contiene una base conservadora versionada, no su factura.
+1. Cree una cuenta/workspace dedicado en [OpenRouter](https://openrouter.ai/) y una API key con límite de gasto; guárdela fuera de Git en `OPENROUTER_API_KEY`. El presupuesto local del paso 8 también es obligatorio. [API](https://openrouter.ai/docs/quickstart).
+2. En los [ajustes del workspace](https://openrouter.ai/workspaces/default/settings), desactive **OpenRouter Use of Inputs/Outputs**. En [observabilidad](https://openrouter.ai/workspaces/default/observability), desactive **Private Input & Output Logging**. Verifique el workspace de la clave y registre la revisión fuera de Git. [Controles de datos](https://openrouter.ai/docs/guides/privacy/data-collection).
+3. Seleccione `MODEL_PROVIDER=openrouter`. Sólo tras esa revisión marque `MODEL_OPENROUTER_DATA_CONTROLS_CONFIRMED=true`; esa variable acredita su confirmación, no modifica la cuenta. Mantenga la salida remota deshabilitada hasta el paso 8.
+4. Conserve la selección por tarea de la plantilla, investigada el 2026-10-03:
 
-La API no usa datos para entrenamiento por defecto salvo consentimiento explícito. El texto correo/PDF sí sale al proveedor. `store:false` no equivale a Zero Data Retention; puede aplicar retención de monitoreo de abuso. ZDR requiere elegibilidad/aprobación. Marque MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true sólo tras verificar: la variable no configura al proveedor. [Controles de datos](https://developers.openai.com/api/docs/guides/your-data).
+| Tarea de extracción                               | Modelo                                           | Endpoint aprobado      | Entrada / salida USD por millón de tokens |
+| ------------------------------------------------- | ------------------------------------------------ | ---------------------- | ----------------------------------------: |
+| Cuerpo hasta 4.000 unidades UTF-16, sin texto PDF | `mistralai/mistral-small-2603` (Mistral Small 4) | `mistral/zdr`          |                               0,15 / 0,60 |
+| Texto PDF o cuerpo mayor                          | `google/gemini-3.1-flash-lite`                   | `google-vertex/global` |                               0,25 / 1,50 |
+
+`MODEL_BODY_MODEL` y `MODEL_DOCUMENT_MODEL` también admiten `google/gemini-2.5-flash` y `anthropic/claude-haiku-4.5` como alternativas explícitas del catálogo revisado. Tarifas y razonamiento están versionados en código; las variables de tarifas OpenAI no los sustituyen. La [investigación de costo/beneficio](docs/validation/openrouter-cost-benefit-a02.md) explica opciones, costos y evaluación de calidad pendiente. El PDF se convierte a texto localmente; escaneos quedan en revisión manual.
+
+Cada solicitud exige exclusión de entrenamiento (`data_collection: deny`), endpoint ZDR, parámetros estructurados y techo de precios. No hay fallback automático ni redirects. Si la ruta deja de cumplir estas condiciones, falla sin exportar a otro proveedor. `local-only` conserva cero llamadas remotas. [Enrutamiento](https://openrouter.ai/docs/guides/routing/provider-selection), [ZDR](https://openrouter.ai/docs/guides/features/zdr).
+
+Para conservar OpenAI directo, use `MODEL_PROVIDER=openai`, su clave `MODEL_API_KEY`, `MODEL_NAME=gpt-5.6-terra`, `MODEL_REASONING_EFFORT=medium` y `MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true` sólo después de verificar los [controles de ese proyecto](https://developers.openai.com/api/docs/guides/your-data). Revise sus variables de tarifas. Esa ruta usa `store:false` y no acredita ZDR. Las instalaciones sin `MODEL_PROVIDER` conservan esta ruta anterior; A02 nunca reutiliza su clave ni confirmación en OpenRouter.
 
 ## 6. Completar .env y claves
 
@@ -130,9 +137,9 @@ Edite .env; no ejecute `source .env`. Conserve las demás variables de la planti
 | GMAIL_REDIRECT_URI                                       | `https://cerebro.example.com/api/v1/gmail/callback`                 |
 | GMAIL_PUBSUB_TOPIC / GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL | Paso 3                                                              |
 | GOOGLE_PUBSUB_AUDIENCE                                   | `https://cerebro.example.com/webhooks/google/gmail`                 |
-| TELEGRAM_BOT_TOKEN / MODEL_API_KEY                       | Pasos 4 y 5                                                         |
+| TELEGRAM_BOT_TOKEN / OPENROUTER_API_KEY                  | Pasos 4 y 5                                                         |
 
-Mantenga inicialmente GMAIL_SYNC_ENABLED, MODEL_REMOTE_ENABLED, MODEL_PROJECT_DATA_CONTROLS_CONFIRMED y NOTIFICATIONS_AUTOMATIC_ENABLED en false, EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only. Deje puertos/direcciones host de la plantilla: API 4310, web 3000, PostgreSQL 54329, Redis 6389, MinIO 9009/9010. Compose sustituye las direcciones internas.
+Mantenga inicialmente GMAIL_SYNC_ENABLED, MODEL_REMOTE_ENABLED, MODEL_OPENROUTER_DATA_CONTROLS_CONFIRMED, MODEL_PROJECT_DATA_CONTROLS_CONFIRMED y NOTIFICATIONS_AUTOMATIC_ENABLED en false, EXTRACTION_DEFAULT_PRIVACY_PROFILE=local-only. Deje puertos/direcciones host de la plantilla: API 4310, web 3000, PostgreSQL 54329, Redis 6389, MinIO 9009/9010. Compose sustituye las direcciones internas.
 
 Genere cada secreto por separado:
 
@@ -210,8 +217,9 @@ Tras verificar privacidad, cambie .env:
 
 ```dotenv
 EXTRACTION_DEFAULT_PRIVACY_PROFILE=remote-allowed
+MODEL_PROVIDER=openrouter
 MODEL_REMOTE_ENABLED=true
-MODEL_PROJECT_DATA_CONTROLS_CONFIRMED=true
+MODEL_OPENROUTER_DATA_CONTROLS_CONFIRMED=true
 GMAIL_SYNC_ENABLED=true
 ```
 
@@ -221,7 +229,7 @@ dc ps
 dc logs --tail=50 worker scheduler
 ```
 
-Restart no recarga .env. Local-only no tiene adaptador productivo local y deja revisión manual; cambiar perfil después no garantiza reprocesar lo bloqueado.
+Restart no recarga .env. Para OpenAI directo use la confirmación del paso 5. Local-only no tiene adaptador productivo local y deja revisión manual; cambiar perfil después no garantiza reprocesar lo bloqueado. El presupuesto reserva el modelo elegido para cada entrada; un error o timeout no cambia modelo/proveedor. La cota de entrada incluye instrucciones y schema (16.000 bytes por defecto); salida máxima de 800 tokens por defecto.
 
 ## 9. Vincular Telegram y conectar Gmail
 
@@ -426,7 +434,7 @@ La validación con una cuenta Gmail real autorizada, un bot/chat Telegram real y
 
 ## Auditoría de seguridad A01
 
-La [auditoría del 2026-10-03](docs/validation/security-requirements-a01.md) encontró que los requisitos de OpenRouter, selección del modelo y permisos efectivos de solo lectura todavía no están cumplidos por completo. El proveedor implementado es OpenAI directo; `MODEL_PROVIDER=openrouter` no lo cambia. Gmail solicita `gmail.readonly`, pero puede incorporar permisos previos y no valida los scopes de los tokens aceptados. Las pruebas fake de extracción no demuestran la idoneidad comparativa del LLM.
+La [auditoría del 2026-10-03](docs/validation/security-requirements-a01.md) describe el estado previo a A02: sólo OpenAI directo, sin selección comparativa ni validación de permisos efectivos de Gmail. A02 corrige el transporte/política OpenRouter y selecciona modelos por costo/capacidad, como describe la sección siguiente. Gmail todavía puede incorporar permisos previos y no valida los scopes de los tokens aceptados. Las pruebas fake de extracción no demuestran la idoneidad comparativa del LLM.
 
 Los comandos comprobados para la revisión son:
 
@@ -440,6 +448,21 @@ TEST_DATABASE_URL="$A01_TEST_DATABASE_URL" \
 ```
 
 Pasaron 34 casos distintos; las sondas adicionales reprodujeron aceptación de permisos de escritura y scope ausente. El informe detalla las correcciones pendientes y los controles de cuenta/evaluación que requieren evidencia operativa. Estos resultados no certifican un despliegue real.
+
+## Corrección OpenRouter A02
+
+El [ADR 0003](docs/adr/0003-openrouter-private-task-routing.md) explica la causa y el cambio. OpenRouter está implementado y disponible bajo las barreras del paso 5/8. Las pruebas usan el adaptador real con HTTP interceptado y fixtures sintéticos: privacidad por solicitud, claves separadas, bloqueo sin confirmación/presupuesto, selección cuerpo/PDF, ledger por modelo, esquema y errores/timeout sin fallback.
+
+Comandos de verificación:
+
+```bash
+pnpm --filter @crashmemory/model-gateway --filter @crashmemory/extraction test
+# PostgreSQL aislado, URL de prueba fuera de Git:
+: "${A02_TEST_DATABASE_URL:?Defina la URL del PostgreSQL temporal}"
+TEST_DATABASE_URL="$A02_TEST_DATABASE_URL" pnpm --filter @crashmemory/worker test
+```
+
+La cuenta OpenRouter, una inferencia facturable y la precisión real no se certifican mediante fixtures. La [investigación A02](docs/validation/openrouter-cost-benefit-a02.md) y [acta](docs/sessions/A02.md) registran evidencia, validaciones y límites. Mantenga los avisos automáticos deshabilitados hasta medir/aprobar calidad.
 
 ## Alcance
 
